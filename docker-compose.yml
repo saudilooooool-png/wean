@@ -151,8 +151,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      GROQ_API_KEY: ${GROQ_API_KEY}
-      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/3
       APPWRITE_ENDPOINT: ${APPWRITE_ENDPOINT:-http://appwrite:80/v1}
       APPWRITE_PROJECT_ID: ${APPWRITE_PROJECT_ID}
