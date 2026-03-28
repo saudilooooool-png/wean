@@ -663,6 +663,10 @@ async def _log_search(phone, lat, lng, place_type, count):
         log.warning("appwrite.log_failed", error=str(exc))
 
 
+from admin_routes import router as admin_router
+app.include_router(admin_router)
+
+
 @app.exception_handler(Exception)
 async def _err(request: Request, exc: Exception):
     log.error("unhandled", path=str(request.url), error=str(exc))

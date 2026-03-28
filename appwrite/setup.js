@@ -260,6 +260,10 @@ async function setupSearchesCollection() {
   await addStringAttr(collectionId,   'formatted_message', 4000, false);
   await addBoolAttr(  collectionId,   'cache_hit',       false, false);
   await addDatetimeAttr(collectionId, 'timestamp',       true);
+  // Admin-panel fields
+  await addBoolAttr(  collectionId,   'opted_out',        false, false);
+  await addStringAttr(collectionId,   'notes',            1000,  false, '');
+  await addDatetimeAttr(collectionId, 'last_messaged_at', false);
 
   await sleep(1000);
   await addIndex(collectionId, 'idx_phone',     IndexType.Key, ['phone_number'], ['ASC']);
@@ -267,6 +271,80 @@ async function setupSearchesCollection() {
   await addIndex(collectionId, 'idx_timestamp', IndexType.Key, ['timestamp'],    ['DESC']);
   // Geospatial-style index for analytics (not true geo, but useful for filtering)
   await addIndex(collectionId, 'idx_lat_lng',   IndexType.Key, ['latitude', 'longitude'], ['ASC', 'ASC']);
+}
+
+async function setupBroadcastsCollection() {
+  const collectionId = 'broadcasts';
+  const permissions = [
+    Permission.read(Role.any()),
+    Permission.write(Role.any()),
+  ];
+
+  await ensureCollection(collectionId, 'Broadcasts', permissions);
+  await sleep(500);
+
+  await addStringAttr(  collectionId, 'name',              256,  true);
+  await addStringAttr(  collectionId, 'message',           4000, true);
+  await addStringAttr(  collectionId, 'target_place_type', 64,   false);
+  await addIntAttr(     collectionId, 'target_days',       false, 1, 365, 30);
+  // status: draft | scheduled | sending | sent | failed
+  await addStringAttr(  collectionId, 'status',            32,   false, 'draft');
+  await addIntAttr(     collectionId, 'target_count',      false, 0, null, 0);
+  await addIntAttr(     collectionId, 'sent_count',        false, 0, null, 0);
+  await addDatetimeAttr(collectionId, 'scheduled_at',      false);
+  await addDatetimeAttr(collectionId, 'created_at',        false);
+
+  await sleep(1000);
+  await addIndex(collectionId, 'idx_status',     IndexType.Key, ['status'],     ['ASC']);
+  await addIndex(collectionId, 'idx_created_at', IndexType.Key, ['created_at'], ['DESC']);
+}
+
+async function setupAdvertisersCollection() {
+  const collectionId = 'advertisers';
+  const permissions = [
+    Permission.read(Role.any()),
+    Permission.write(Role.any()),
+  ];
+
+  await ensureCollection(collectionId, 'Advertisers', permissions);
+  await sleep(500);
+
+  await addStringAttr(  collectionId, 'business_name',      256,  true);
+  await addStringAttr(  collectionId, 'category',           64,   true);
+  await addStringAttr(  collectionId, 'location',           256,  false);
+  await addStringAttr(  collectionId, 'ad_message',         2000, false);
+  await addFloatAttr(   collectionId, 'monthly_budget',     false, 0, null, 0);
+  await addStringAttr(  collectionId, 'contact_phone',      20,   true);
+  // status: pending | active | rejected
+  await addStringAttr(  collectionId, 'status',             32,   false, 'pending');
+  await addIntAttr(     collectionId, 'duration_days',      false, 1, 365, 30);
+  await addIntAttr(     collectionId, 'max_sends_per_week', false, 1, 100, 2);
+  await addFloatAttr(   collectionId, 'service_fee',        false, 0, null, 0);
+  await addDatetimeAttr(collectionId, 'approved_at',        false);
+
+  await sleep(1000);
+  await addIndex(collectionId, 'idx_status',        IndexType.Key,    ['status'],        ['ASC']);
+  await addIndex(collectionId, 'idx_contact_phone', IndexType.Key,    ['contact_phone'], ['ASC']);
+}
+
+async function setupBotSettingsCollection() {
+  const collectionId = 'bot_settings';
+  const permissions = [
+    Permission.read(Role.any()),
+    Permission.write(Role.any()),
+  ];
+
+  await ensureCollection(collectionId, 'Bot Settings', permissions);
+  await sleep(500);
+
+  await addIntAttr(   collectionId, 'search_radius',        false, 100,  50000, 2000);
+  await addIntAttr(   collectionId, 'max_results',          false, 1,    20,    5);
+  await addStringAttr(collectionId, 'welcome_message',      1000,  false,
+    'مرحباً بك في وين! أرسل اسم المكان الذي تبحث عنه.');
+  await addIntAttr(   collectionId, 'max_messages_per_week', false, 1,   100,   1);
+  await addIntAttr(   collectionId, 'send_hours_from',      false, 0,    23,    9);
+  await addIntAttr(   collectionId, 'send_hours_to',        false, 0,    23,    21);
+  await addIntAttr(   collectionId, 'antispam_cooldown_days', false, 1,  365,   7);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -296,12 +374,24 @@ async function main() {
     console.log('\n[setup] Setting up "searches" collection…');
     await setupSearchesCollection();
 
+    console.log('\n[setup] Setting up "broadcasts" collection…');
+    await setupBroadcastsCollection();
+
+    console.log('\n[setup] Setting up "advertisers" collection…');
+    await setupAdvertisersCollection();
+
+    console.log('\n[setup] Setting up "bot_settings" collection…');
+    await setupBotSettingsCollection();
+
     console.log('\n✅  Appwrite setup complete!');
     console.log('');
     console.log('Collections created:');
-    console.log('  • users    – user profiles and preferences');
-    console.log('  • sessions – WhatsApp conversation state machine');
-    console.log('  • searches – search history and analytics');
+    console.log('  • users        – user profiles and preferences');
+    console.log('  • sessions     – WhatsApp conversation state machine');
+    console.log('  • searches     – search history and analytics (incl. opted_out, notes)');
+    console.log('  • broadcasts   – broadcast campaigns');
+    console.log('  • advertisers  – advertiser registrations and approvals');
+    console.log('  • bot_settings – configurable bot parameters');
     console.log('');
     console.log('Next steps:');
     console.log('  1. Set APPWRITE_DB_ID=wean_db in your .env');
