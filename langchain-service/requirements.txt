@@ -3,19 +3,15 @@ uvicorn[standard]==0.29.0
 pydantic==2.7.1
 pydantic-settings==2.2.1
 
-# LangChain stack
+# LangChain
 langchain==0.2.1
-langchain-openai==0.1.8
+langchain-groq==0.1.6
 langchain-core==0.2.3
 
-# Google Maps
-googlemaps==4.10.0
+# Playwright (Google Maps scraping — بدون API key)
+playwright==1.44.0
 
-# HTTP / async
-httpx==0.27.0
-aiohttp==3.9.5
-
-# Redis (session cache)
+# Redis
 redis==5.0.4
 
 # Appwrite SDK
