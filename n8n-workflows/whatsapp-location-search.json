@@ -1,0 +1,440 @@
+{
+  "name": "Wean – WhatsApp Location Search",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000001",
+      "name": "Webhook – Evolution API",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 400],
+      "webhookId": "wean-whatsapp-webhook"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"received\" }",
+        "options": {}
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000002",
+      "name": "Respond 200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [480, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Parse Evolution API webhook payload ───────────────────────────────────\nconst body = $input.first().json.body || $input.first().json;\n\nconst event = body.event || '';\nconst instance = body.instance || '';\nconst data = body.data || {};\n\n// Only process MESSAGES_UPSERT events with actual content\nif (event !== 'messages.upsert') {\n  return [{ json: { skip: true, reason: 'not_messages_upsert', event } }];\n}\n\nconst message = data.message || {};\nconst key = data.key || {};\n\n// Ignore our own outgoing messages\nif (key.fromMe === true) {\n  return [{ json: { skip: true, reason: 'own_message' } }];\n}\n\nconst remoteJid = key.remoteJid || '';\nconst phoneNumber = remoteJid.replace('@s.whatsapp.net', '').replace('@g.us', '');\nconst isGroup = remoteJid.includes('@g.us');\n\n// Skip group messages (can be enabled later)\nif (isGroup) {\n  return [{ json: { skip: true, reason: 'group_message' } }];\n}\n\n// Detect message type\nlet messageType = 'unknown';\nlet textContent = '';\nlet locationLat = null;\nlet locationLng = null;\n\nif (message.conversation || message.extendedTextMessage) {\n  messageType = 'text';\n  textContent = message.conversation || message.extendedTextMessage?.text || '';\n} else if (message.locationMessage) {\n  messageType = 'location';\n  locationLat = message.locationMessage.degreesLatitude;\n  locationLng = message.locationMessage.degreesLongitude;\n} else if (message.liveLocationMessage) {\n  messageType = 'location';\n  locationLat = message.liveLocationMessage.degreesLatitude;\n  locationLng = message.liveLocationMessage.degreesLongitude;\n}\n\nreturn [{\n  json: {\n    skip: false,\n    messageType,\n    phoneNumber,\n    remoteJid,\n    instance,\n    textContent,\n    locationLat,\n    locationLng,\n    rawMessage: message,\n  }\n}];\n"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000003",
+      "name": "Parse Webhook Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000004",
+      "name": "Should Skip?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "id": "is-location",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "location",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "location"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "id": "is-text",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "text",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000005",
+      "name": "Switch – Message Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Get or init session from Redis-like state stored in n8n static data ────\n// We use n8n's built-in workflow static data as a lightweight session store.\n// For production, replace with Redis HTTP calls or Appwrite document reads.\n\nconst phoneNumber = $json.phoneNumber;\nconst lat = $json.locationLat;\nconst lng = $json.locationLng;\n\n// Retrieve existing session\nconst workflowStaticData = $getWorkflowStaticData('global');\nconst sessions = workflowStaticData.sessions || {};\nconst session = sessions[phoneNumber] || { state: 'idle', lat: null, lng: null };\n\n// User sent a location: save it and ask what they're looking for\nsession.lat = lat;\nsession.lng = lng;\nsession.state = 'awaiting_place_type';\nsession.updatedAt = new Date().toISOString();\n\nworkflowStaticData.sessions = { ...sessions, [phoneNumber]: session };\n\nconst replyText =\n  'مرحباً بك! 👋\\n\\n' +\n  'استلمت موقعك بنجاح. 📍\\n\\n' +\n  'ماذا تبحث عنه؟ يمكنك اختيار:\\n' +\n  '🍽️ مطعم\\n' +\n  '☕ كافيه\\n' +\n  '💊 صيدلية\\n' +\n  '🏥 مستشفى\\n' +\n  '🛒 سوبرماركت\\n' +\n  '🕌 مسجد\\n' +\n  '⛽ محطة بنزين\\n' +\n  '🏧 صراف آلي\\n\\n' +\n  'أو اكتب ما تريد البحث عنه بحرية!';\n\nreturn [{\n  json: {\n    phoneNumber,\n    remoteJid: $json.remoteJid,\n    instance: $json.instance,\n    replyText,\n    sessionState: session.state,\n    lat,\n    lng,\n  }\n}];\n"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000006",
+      "name": "Handle Location – Save & Ask",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Handle text message: check session state ────────────────────────────────\nconst phoneNumber = $json.phoneNumber;\nconst text = ($json.textContent || '').trim();\n\nconst workflowStaticData = $getWorkflowStaticData('global');\nconst sessions = workflowStaticData.sessions || {};\nconst session = sessions[phoneNumber] || { state: 'idle' };\n\nlet action = 'unknown';\nlet lat = session.lat || null;\nlet lng = session.lng || null;\n\nif (session.state === 'awaiting_place_type' && lat && lng) {\n  action = 'search_intent';   // user has location, now telling us what to find\n} else if (session.state === 'idle' || !lat || !lng) {\n  action = 'ask_location';    // no location yet\n} else {\n  action = 'search_intent';\n}\n\nreturn [{\n  json: {\n    phoneNumber,\n    remoteJid: $json.remoteJid,\n    instance: $json.instance,\n    text,\n    action,\n    lat,\n    lng,\n    sessionState: session.state,\n  }\n}];\n"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000007",
+      "name": "Handle Text – Check Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 520]
+    },
+    {
+      "parameters": {
+        "url": "http://langchain-service:8000/intent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.text }}\",\n  \"phone_number\": \"{{ $json.phoneNumber }}\"\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000008",
+      "name": "LangChain – Extract Intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 520]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "id": "has-location",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "ask_location",
+                    "operator": { "type": "string", "operation": "notEquals" }
+                  },
+                  {
+                    "id": "has-place-type",
+                    "leftValue": "={{ $json.place_type }}",
+                    "rightValue": "",
+                    "operator": { "type": "string", "operation": "notEquals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "do_search"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000009",
+      "name": "Switch – Has Location + Intent?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1680, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Merge intent response with session lat/lng ──────────────────────────────\nconst intentData = $json;   // output from LangChain intent node\nconst phoneNumber = intentData.phone_number ||\n  $('Handle Text – Check Session').first().json.phoneNumber;\nconst lat = $('Handle Text – Check Session').first().json.lat;\nconst lng = $('Handle Text – Check Session').first().json.lng;\nconst remoteJid = $('Handle Text – Check Session').first().json.remoteJid;\nconst instance = $('Handle Text – Check Session').first().json.instance;\n\nreturn [{\n  json: {\n    phoneNumber,\n    remoteJid,\n    instance,\n    lat,\n    lng,\n    action: $('Handle Text – Check Session').first().json.action,\n    place_type: intentData.place_type,\n    confidence: intentData.confidence,\n    suggested_reply: intentData.suggested_reply,\n  }\n}];\n"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000010",
+      "name": "Merge Intent + Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 520]
+    },
+    {
+      "parameters": {
+        "url": "http://langchain-service:8000/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lat\": {{ $json.lat }},\n  \"lng\": {{ $json.lng }},\n  \"place_type\": \"{{ $json.place_type }}\",\n  \"language\": \"ar\",\n  \"radius\": 2000,\n  \"max_results\": 5,\n  \"phone_number\": \"{{ $json.phoneNumber }}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000011",
+      "name": "LangChain – Search Places",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2160, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Format search results for WhatsApp via Evolution API ───────────────────\nconst searchResult = $json;\n\n// Retrieve upstream context depending on which path we came from\nlet remoteJid, instance, phoneNumber;\ntry {\n  remoteJid = $('Merge Intent + Session').first().json.remoteJid;\n  instance  = $('Merge Intent + Session').first().json.instance;\n  phoneNumber = $('Merge Intent + Session').first().json.phoneNumber;\n} catch (_) {\n  remoteJid = $('Handle Location – Save & Ask').first().json.remoteJid;\n  instance  = $('Handle Location – Save & Ask').first().json.instance;\n  phoneNumber = $('Handle Location – Save & Ask').first().json.phoneNumber;\n}\n\nconst message = searchResult.formatted_message ||\n  'عذراً، حدث خطأ أثناء البحث. يرجى المحاولة لاحقاً.';\n\nreturn [{\n  json: {\n    remoteJid,\n    instance,\n    phoneNumber,\n    message,\n    totalFound: searchResult.total_found || 0,\n  }\n}];\n"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000012",
+      "name": "Format Search Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.EVOLUTION_SERVER_URL }}/message/sendText/{{ $json.instance }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.remoteJid }}\",\n  \"textMessage\": {\n    \"text\": {{ JSON.stringify($json.message) }}\n  },\n  \"options\": {\n    \"delay\": 1000,\n    \"presence\": \"composing\"\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000013",
+      "name": "Send Search Results via Evolution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2640, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.EVOLUTION_SERVER_URL }}/message/sendText/{{ $json.instance }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.remoteJid }}\",\n  \"textMessage\": {\n    \"text\": {{ JSON.stringify($json.replyText) }}\n  },\n  \"options\": {\n    \"delay\": 1000,\n    \"presence\": \"composing\"\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000014",
+      "name": "Send Ask-What Reply via Evolution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── No location yet: ask user to share location ─────────────────────────────\nconst phoneNumber = $json.phoneNumber ||\n  $('Handle Text – Check Session').first().json.phoneNumber;\nconst remoteJid = $json.remoteJid ||\n  $('Handle Text – Check Session').first().json.remoteJid;\nconst instance = $json.instance ||\n  $('Handle Text – Check Session').first().json.instance;\n\nconst replyText =\n  'مرحباً! 👋\\n\\n' +\n  'لأتمكن من مساعدتك في البحث عن أماكن قريبة منك،\\n' +\n  'أرسل لي موقعك الجغرافي أولاً. 📍\\n\\n' +\n  'في واتساب: اضغط على مشاركة الموقع ← الموقع الحالي';\n\nreturn [{\n  json: { phoneNumber, remoteJid, instance, replyText }\n}];\n"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000015",
+      "name": "Build Ask-Location Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 680]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.EVOLUTION_SERVER_URL }}/message/sendText/{{ $json.instance }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.remoteJid }}\",\n  \"textMessage\": {\n    \"text\": {{ JSON.stringify($json.replyText) }}\n  },\n  \"options\": {\n    \"delay\": 800,\n    \"presence\": \"composing\"\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000016",
+      "name": "Send Ask-Location Reply via Evolution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2160, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Build suggested-reply (intent known but no location) ────────────────────\nconst intentData = $json;\nconst ctx = $('Handle Text – Check Session').first().json;\n\nreturn [{\n  json: {\n    phoneNumber: ctx.phoneNumber,\n    remoteJid: ctx.remoteJid,\n    instance: ctx.instance,\n    replyText: intentData.suggested_reply ||\n      'أرسل لي موقعك الجغرافي وسأبحث لك فوراً! 📍',\n  }\n}];\n"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000017",
+      "name": "Build Suggested-Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 840]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.EVOLUTION_SERVER_URL }}/message/sendText/{{ $json.instance }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.remoteJid }}\",\n  \"textMessage\": {\n    \"text\": {{ JSON.stringify($json.replyText) }}\n  },\n  \"options\": {\n    \"delay\": 800,\n    \"presence\": \"composing\"\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000018",
+      "name": "Send Suggested-Reply via Evolution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2160, 840]
+    }
+  ],
+  "connections": {
+    "Webhook – Evolution API": {
+      "main": [
+        [
+          { "node": "Respond 200 OK", "type": "main", "index": 0 },
+          { "node": "Parse Webhook Payload", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Webhook Payload": {
+      "main": [
+        [{ "node": "Should Skip?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Should Skip?": {
+      "main": [
+        [],
+        [{ "node": "Switch – Message Type", "type": "main", "index": 0 }]
+      ]
+    },
+    "Switch – Message Type": {
+      "main": [
+        [{ "node": "Handle Location – Save & Ask", "type": "main", "index": 0 }],
+        [{ "node": "Handle Text – Check Session", "type": "main", "index": 0 }]
+      ]
+    },
+    "Handle Location – Save & Ask": {
+      "main": [
+        [{ "node": "Send Ask-What Reply via Evolution", "type": "main", "index": 0 }]
+      ]
+    },
+    "Handle Text – Check Session": {
+      "main": [
+        [{ "node": "LangChain – Extract Intent", "type": "main", "index": 0 }]
+      ]
+    },
+    "LangChain – Extract Intent": {
+      "main": [
+        [{ "node": "Switch – Has Location + Intent?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Switch – Has Location + Intent?": {
+      "main": [
+        [{ "node": "Merge Intent + Session", "type": "main", "index": 0 }],
+        [{ "node": "Build Ask-Location Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge Intent + Session": {
+      "main": [
+        [{ "node": "LangChain – Search Places", "type": "main", "index": 0 }]
+      ]
+    },
+    "LangChain – Search Places": {
+      "main": [
+        [{ "node": "Format Search Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Search Reply": {
+      "main": [
+        [{ "node": "Send Search Results via Evolution", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Ask-Location Reply": {
+      "main": [
+        [{ "node": "Send Ask-Location Reply via Evolution", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Suggested-Reply": {
+      "main": [
+        [{ "node": "Send Suggested-Reply via Evolution", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": {
+    "global": {
+      "sessions": {}
+    }
+  },
+  "tags": [
+    { "name": "whatsapp" },
+    { "name": "location-search" },
+    { "name": "arabic" }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-28T00:00:00.000Z",
+  "versionId": "1"
+}
