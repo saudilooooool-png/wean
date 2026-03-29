@@ -405,6 +405,55 @@ async def health():
     }
 
 
+class CitySearchRequest(BaseModel):
+    city_name: str = Field(..., description="اسم المدينة بالعربي")
+    place_type: str
+    max_results: int = Field(default=5, ge=1, le=10)
+    phone_number: str | None = None
+
+
+# إحداثيات المدن الرئيسية
+CITY_COORDS: dict[str, tuple[float, float]] = {
+    "الرياض": (24.7136, 46.6753), "رياض": (24.7136, 46.6753),
+    "جدة": (21.4858, 39.1925), "جده": (21.4858, 39.1925),
+    "مكة": (21.3891, 39.8579), "مكه": (21.3891, 39.8579),
+    "مكة المكرمة": (21.3891, 39.8579),
+    "المدينة": (24.5247, 39.5692), "المدينه": (24.5247, 39.5692),
+    "المدينة المنورة": (24.5247, 39.5692),
+    "الدمام": (26.4207, 50.0888), "دمام": (26.4207, 50.0888),
+    "الخبر": (26.2794, 50.2046), "خبر": (26.2794, 50.2046),
+    "الكويت": (29.3759, 47.9774), "كويت": (29.3759, 47.9774),
+    "دبي": (25.2048, 55.2708),
+    "أبوظبي": (24.4539, 54.3773), "ابوظبي": (24.4539, 54.3773),
+    "الشارقة": (25.3463, 55.4209), "شارقة": (25.3463, 55.4209),
+    "حائل": (27.5219, 41.7057),
+    "تبوك": (28.3998, 36.5714),
+    "أبها": (18.2164, 42.5053),
+    "طريف": (30.6607, 38.7283),
+}
+
+
+@app.post("/search/city", response_model=SearchResponse)
+async def search_by_city(req: CitySearchRequest):
+    """بحث في مدينة كاملة بدل نقطة محددة — يستخدم نطاق 5 كم."""
+    coords = CITY_COORDS.get(req.city_name)
+    if not coords:
+        raise HTTPException(
+            status_code=400,
+            detail=f"المدينة '{req.city_name}' غير مدعومة حالياً."
+        )
+    lat, lng = coords
+    # نستخدم نطاق 5 كم ليغطي معظم الحي المركزي
+    fake_req = SearchRequest(
+        lat=lat, lng=lng,
+        place_type=req.place_type,
+        radius=5000,
+        max_results=req.max_results,
+        phone_number=req.phone_number,
+    )
+    return await search_places(fake_req)
+
+
 @app.post("/search", response_model=SearchResponse)
 async def search_places(req: SearchRequest):
     log.info("search.request", lat=req.lat, lng=req.lng, type=req.place_type)
@@ -433,6 +482,13 @@ async def search_places(req: SearchRequest):
             ),
             total_found=0,
         )
+
+    # إذا النتائج أقل من المطلوب → وسّع النطاق تلقائياً (مرة واحدة)
+    if len(raw_places) < req.max_results and req.radius < 8000:
+        expanded = await _query_overpass(req.lat, req.lng, place_type, req.radius * 2)
+        if len(expanded) > len(raw_places):
+            raw_places = expanded
+            total_found = len(raw_places)
 
     top = raw_places[: req.max_results]
 
