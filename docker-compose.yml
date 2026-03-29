@@ -232,6 +232,25 @@ services:
     networks:
       - wean_network
 
+  # ─── Cache Worker — يجدد كاش الأماكن كل 12 ساعة ───────────────────────────
+  cache-worker:
+    build:
+      context: ./langchain-service
+    container_name: wean_cache_worker
+    command: python cache_worker.py
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/3
+      OVERPASS_URL: https://overpass-api.de/api/interpreter
+      API_BASE_URL: http://langchain-service:8000
+      CACHE_REFRESH_HOURS: "12"
+      CACHE_DELAY_SECONDS: "2.5"
+    depends_on:
+      - redis
+      - langchain-service
+    restart: unless-stopped
+    networks:
+      - wean_network
+
   # ─── Admin Dashboard (Next.js) ─────────────────────────────────────────────
   admin:
     build: ./admin

@@ -1,8 +1,8 @@
 """
-Wean – LangChain / FastAPI service
-- Google Maps: Playwright scraping (بدون API key)
-- AI Intent: نموذج محلي sentence-transformers (بدون أي API خارجي)
-- Reviews: عرض مباشر للتعليقات الحقيقية (بدون توليد AI)
+Wean – FastAPI Service
+- بحث الأماكن: Overpass API (OpenStreetMap) — مجاني، بدون Scraping، 1-3 ثانية
+- تصنيف الأوامر: نموذج محلي sentence-transformers — بدون أي API خارجي
+- تقييمات: من كاش مسبق (cache_worker) أو تُعرض بدونها إذا لم تتوفر
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ import hashlib
 import json
 import logging
 import math
-import re
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
 
+import httpx
 import redis.asyncio as aioredis
 import structlog
 from appwrite.client import Client as AppwriteClient
@@ -25,15 +25,13 @@ from appwrite.services.databases import Databases
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from playwright.async_api import Browser, async_playwright
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from intent_model import PLACE_LABEL_AR, classifier
 
 
-# ─── Configuration ────────────────────────────────────────────────────────────
+# ─── إعدادات ──────────────────────────────────────────────────────────────────
 
 class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/3"
@@ -43,12 +41,15 @@ class Settings(BaseSettings):
     app_env: str = "production"
     log_level: str = "info"
     appwrite_db_id: str = "wean_db"
-    appwrite_sessions_collection: str = "sessions"
     appwrite_searches_collection: str = "searches"
     max_results: int = 5
-    cache_ttl_seconds: int = 3600
-    scrape_timeout_ms: int = 20000
-    max_concurrent_scrapes: int = 3
+    cache_ttl_seconds: int = 7200        # ساعتان للبيانات الحية
+    cache_ttl_precached: int = 43200     # 12 ساعة للكاش المسبق
+    overpass_url: str = "https://overpass-api.de/api/interpreter"
+    overpass_timeout: int = 12           # ثانية
+    evolution_url: str = "http://evolution-api:8080"
+    evolution_api_key: str = ""
+    evolution_instance: str = "wean_bot"
 
     class Config:
         env_file = ".env"
@@ -65,22 +66,20 @@ structlog.configure(
 log = structlog.get_logger()
 
 
-# ─── Global state ─────────────────────────────────────────────────────────────
+# ─── حالة عامة ────────────────────────────────────────────────────────────────
 
 redis_client: aioredis.Redis | None = None
 appwrite_db: Databases | None = None
-_browser: Browser | None = None
-_pw = None
-_scrape_sem: asyncio.Semaphore | None = None
+http_client: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, appwrite_db, _browser, _pw, _scrape_sem
+    global redis_client, appwrite_db, http_client
 
     log.info("wean.startup", env=settings.app_env)
 
-    # تحميل نموذج الذكاء المحلي (مرة واحدة)
+    # تحميل نموذج الذكاء المحلي
     await asyncio.to_thread(classifier.load)
     log.info("intent_classifier.ready")
 
@@ -90,18 +89,12 @@ async def lifespan(app: FastAPI):
     await redis_client.ping()
     log.info("redis.connected")
 
-    _pw = await async_playwright().start()
-    _browser = await _pw.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-        ],
+    # HTTP client مشترك (connection pooling)
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(20.0),
+        headers={"User-Agent": "Wean-Bot/3.0 (OpenStreetMap Overpass)"},
     )
-    _scrape_sem = asyncio.Semaphore(settings.max_concurrent_scrapes)
-    log.info("playwright.ready")
+    log.info("http_client.ready")
 
     if settings.appwrite_project_id and settings.appwrite_api_key:
         try:
@@ -116,24 +109,20 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    await _browser.close()
-    await _pw.stop()
+    await http_client.aclose()
     await redis_client.aclose()
     log.info("wean.shutdown")
 
 
 app = FastAPI(
     title="Wean Service",
-    version="3.0.0",
-    description="WhatsApp location search — Playwright + Local AI (no external API)",
+    version="4.0.0",
+    description="WhatsApp location search — Overpass API (OSM) + Local AI",
     lifespan=lifespan,
 )
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
 
 
@@ -152,6 +141,7 @@ class SearchResponse(BaseModel):
     places: list[dict[str, Any]]
     formatted_message: str
     total_found: int
+    from_cache: bool = False
 
 
 class IntentRequest(BaseModel):
@@ -166,7 +156,7 @@ class IntentResponse(BaseModel):
     suggested_reply: str
 
 
-# ─── خريطة نوع المكان (عربي ← Google type) ──────────────────────────────────
+# ─── خرائط نوع المكان ─────────────────────────────────────────────────────────
 
 PLACE_TYPE_MAP: dict[str, str] = {
     "مطعم": "restaurant", "مطاعم": "restaurant", "أكل": "restaurant",
@@ -185,325 +175,217 @@ PLACE_TYPE_MAP: dict[str, str] = {
     "فندق": "lodging", "فنادق": "lodging",
 }
 
-PLACE_TYPE_EN_QUERY: dict[str, str] = {
-    "restaurant": "restaurants", "cafe": "cafes coffee shops",
-    "pharmacy": "pharmacies", "hospital": "hospitals clinics",
-    "supermarket": "supermarkets grocery", "mosque": "mosques",
-    "gas_station": "gas stations", "atm": "ATMs",
-    "bakery": "bakeries", "park": "parks",
-    "lodging": "hotels",
+# خريطة Overpass — نوع المكان → استعلام OSM
+OVERPASS_QUERIES: dict[str, str] = {
+    "restaurant":  '["amenity"="restaurant"]',
+    "cafe":        '["amenity"="cafe"]',
+    "pharmacy":    '["amenity"="pharmacy"]',
+    "hospital":    '["amenity"~"hospital|clinic|doctors"]',
+    "supermarket": '["shop"~"supermarket|grocery|convenience"]',
+    "mosque":      '["amenity"="place_of_worship"]["religion"="muslim"]',
+    "gas_station": '["amenity"="fuel"]',
+    "atm":         '["amenity"="atm"]',
+    "bakery":      '["shop"="bakery"]',
+    "park":        '["leisure"~"park|garden"]',
+    "lodging":     '["tourism"~"hotel|motel|guest_house"]',
 }
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── مساعدات ──────────────────────────────────────────────────────────────────
 
 def _cache_key(lat: float, lng: float, place_type: str, radius: int) -> str:
     raw = f"{lat:.4f}:{lng:.4f}:{place_type}:{radius}"
     return "wean:search:" + hashlib.md5(raw.encode()).hexdigest()
 
 
+def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """المسافة بالمتر بين نقطتين جغرافيتين."""
+    R = 6_371_000
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    dφ = math.radians(lat2 - lat1)
+    dλ = math.radians(lon2 - lon1)
+    a = math.sin(dφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(dλ / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _fmt_distance(meters: float) -> str:
+    if meters < 1000:
+        return f"{int(meters)} م"
+    return f"{meters / 1000:.1f} كم"
+
+
 def _stars(rating: float | None) -> str:
-    if rating is None:
-        return "لا يوجد تقييم"
+    if not rating:
+        return ""
     filled = round(rating)
     return "⭐" * filled + "☆" * (5 - filled) + f" ({rating:.1f})"
 
 
-def _rank(p: dict) -> float:
-    r = p.get("rating") or 0.0
-    n = p.get("user_ratings_total") or 0
-    return r * math.log(n + 2)
+def _parse_opening_hours(oh: str | None) -> str | None:
+    """تحويل صيغة opening_hours لـ OSM إلى نص مقروء."""
+    if not oh:
+        return None
+    if oh.strip() == "24/7":
+        return "🟢 مفتوح 24/7"
+    return f"🕐 {oh}"
 
 
-def _format_reviews(
-    reviews: list[dict], rating: float | None, count: int, name: str
-) -> str:
-    """
-    عرض التعليقات الحقيقية بدون AI —
-    نختار أكثر تعليقين إفادةً بناءً على الطول والتنوع.
-    """
-    if not reviews:
-        if rating and count:
-            pos_pct = min(100, int((rating / 5) * 100))
-            return f"بناءً على {count:,} تقييم — {pos_pct}% إيجابية"
-        return ""
+# ─── Overpass API ─────────────────────────────────────────────────────────────
 
-    avg_rating = rating or 3.0
-
-    # تسجيل نقاط لكل تعليق: نص أطول + تقييم مختلف عن المتوسط = أكثر إفادة
-    scored: list[tuple[float, dict]] = []
-    for r in reviews:
-        text = (r.get("text") or "").strip()
-        if not text:
-            continue
-        r_val = float(r.get("rating") or avg_rating)
-        score = len(text) + abs(r_val - avg_rating) * 30
-        scored.append((score, r))
-
-    top = sorted(scored, key=lambda x: x[0], reverse=True)[:2]
-
-    lines: list[str] = []
-    for _, r in top:
-        text = (r.get("text") or "").strip()[:220]
-        r_val = r.get("rating") or 0
-        if r_val >= 4:
-            emoji = "✅"
-        elif r_val <= 2:
-            emoji = "❌"
-        else:
-            emoji = "➖"
-        lines.append(f"{emoji} {text}")
-
-    return "\n".join(lines)
-
-
-# ─── Google Maps Scraper ───────────────────────────────────────────────────────
-
-async def _scrape_places_list(
-    lat: float, lng: float, place_type: str, max_results: int
+async def _query_overpass(
+    lat: float, lng: float, place_type: str, radius: int
 ) -> list[dict]:
-    query_ar = PLACE_LABEL_AR.get(place_type, place_type)
-    query_en = PLACE_TYPE_EN_QUERY.get(place_type, place_type.replace("_", " "))
+    osm_filter = OVERPASS_QUERIES.get(place_type, f'["amenity"="{place_type}"]')
 
-    for query in [query_ar, query_en]:
-        url = (
-            f"https://www.google.com/maps/search/{quote(query)}"
-            f"/@{lat},{lng},14z?hl=ar"
+    query = f"""
+[out:json][timeout:{settings.overpass_timeout}];
+(
+  node{osm_filter}(around:{radius},{lat},{lng});
+  way{osm_filter}(around:{radius},{lat},{lng});
+);
+out center tags;
+"""
+    try:
+        resp = await http_client.post(
+            settings.overpass_url,
+            data={"data": query},
+            timeout=settings.overpass_timeout + 3,
         )
-        places = await _scrape_url(url, max_results)
-        if places:
-            return places
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.TimeoutException:
+        log.warning("overpass.timeout", place_type=place_type)
+        raise HTTPException(status_code=504, detail="انتهت مهلة الاستعلام، حاول مجدداً.")
+    except Exception as exc:
+        log.error("overpass.error", error=str(exc))
+        raise HTTPException(status_code=502, detail="خطأ في جلب البيانات.")
 
-    return []
+    places: list[dict] = []
+    for el in data.get("elements", []):
+        tags = el.get("tags", {})
 
+        # الاسم: نفضّل العربي
+        name = (
+            tags.get("name:ar")
+            or tags.get("name")
+            or tags.get("name:en")
+            or ""
+        ).strip()
+        if not name:
+            continue
 
-async def _scrape_url(url: str, max_results: int) -> list[dict]:
-    async with _scrape_sem:
-        context = await _browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-            locale="ar-SA",
-            viewport={"width": 1280, "height": 800},
-        )
-        page = await context.new_page()
-        places: list[dict] = []
+        # الإحداثيات
+        if el["type"] == "way":
+            c = el.get("center", {})
+            p_lat, p_lng = c.get("lat"), c.get("lon")
+        else:
+            p_lat, p_lng = el.get("lat"), el.get("lon")
 
-        try:
-            await page.goto(url, wait_until="domcontentloaded",
-                            timeout=settings.scrape_timeout_ms)
+        if not p_lat or not p_lng:
+            continue
 
-            for btn in ["Accept all", "قبول الكل"]:
-                try:
-                    await page.get_by_role("button", name=btn).click(timeout=2000)
-                    break
-                except Exception:
-                    pass
+        distance = _haversine(lat, lng, p_lat, p_lng)
 
-            try:
-                await page.wait_for_selector(
-                    'div[role="feed"]', timeout=settings.scrape_timeout_ms
-                )
-            except Exception:
-                return []
+        places.append({
+            "name": name,
+            "lat": p_lat,
+            "lng": p_lng,
+            "distance_m": round(distance),
+            "phone": tags.get("phone") or tags.get("contact:phone"),
+            "address": (
+                tags.get("addr:full")
+                or " ".join(filter(None, [
+                    tags.get("addr:street"),
+                    tags.get("addr:suburb"),
+                    tags.get("addr:city"),
+                ])) or ""
+            ).strip(),
+            "opening_hours": tags.get("opening_hours"),
+            "website": tags.get("website") or tags.get("contact:website"),
+            "osm_id": el.get("id"),
+            # التقييمات تأتي من الكاش المسبق (cache_worker)
+            "rating": None,
+            "user_ratings_total": 0,
+        })
 
-            feed = page.locator('div[role="feed"]')
-            for _ in range(4):
-                await feed.evaluate("el => el.scrollTop += 600")
-                await asyncio.sleep(0.5)
-
-            cards = await page.query_selector_all('div[role="feed"] > div')
-            for card in cards:
-                if len(places) >= max_results * 2:
-                    break
-                try:
-                    place = await _parse_card(card)
-                    if place and place.get("name"):
-                        places.append(place)
-                except Exception:
-                    pass
-
-        except Exception as exc:
-            log.error("scraper.page_error", error=str(exc))
-        finally:
-            await page.close()
-            await context.close()
-
+    # ترتيب حسب المسافة
+    places.sort(key=lambda x: x["distance_m"])
     return places
 
 
-async def _parse_card(card) -> dict | None:
-    name = None
-    for sel in [".fontHeadlineSmall", "div[class*='fontHeadline']", "h3"]:
-        el = await card.query_selector(sel)
-        if el:
-            text = (await el.text_content() or "").strip()
-            if text and len(text) > 1:
-                name = text
-                break
-    if not name:
-        return None
+async def _enrich_from_ratings_cache(places: list[dict]) -> list[dict]:
+    """
+    يحاول إضافة التقييمات من كاش ratings المسبق (إذا توفر).
+    لا يُبطئ الاستجابة — يعمل بشكل متوازٍ.
+    """
+    if not redis_client:
+        return places
 
-    rating = None
-    for sel in ["span.MW4etd", "span[aria-label*='نجم']", "span[aria-label*='star']"]:
-        el = await card.query_selector(sel)
-        if el:
-            try:
-                rating = float((await el.text_content() or "").strip().replace(",", "."))
-                break
-            except ValueError:
-                pass
+    async def _fetch_rating(place: dict) -> dict:
+        key = f"wean:rating:{hashlib.md5(place['name'].encode()).hexdigest()}"
+        cached = await redis_client.get(key)
+        if cached:
+            r = json.loads(cached)
+            place["rating"] = r.get("rating")
+            place["user_ratings_total"] = r.get("total", 0)
+            place["reviews"] = r.get("reviews", [])
+        else:
+            place["reviews"] = []
+        return place
 
-    count = 0
-    for sel in ["span.UY7F9", "span[aria-label*='تقييم']"]:
-        el = await card.query_selector(sel)
-        if el:
-            txt = re.sub(r"[^\d]", "", await el.text_content() or "")
-            count = int(txt) if txt else 0
-            break
-
-    address = ""
-    for el in reversed(await card.query_selector_all(".W4Efsd")):
-        txt = (await el.text_content() or "").strip()
-        if txt and txt != name and len(txt) > 4:
-            address = txt
-            break
-
-    open_now: bool | None = None
-    open_el = await card.query_selector(".eXlnHd")
-    if open_el:
-        txt = (await open_el.text_content() or "").lower()
-        open_now = "مفتوح" in txt or "open" in txt
-
-    place_url = None
-    link = await card.query_selector("a[href*='/maps/place/']")
-    if link:
-        place_url = await link.get_attribute("href")
-
-    return {
-        "name": name,
-        "rating": rating,
-        "user_ratings_total": count,
-        "formatted_address": address,
-        "open_now": open_now,
-        "place_url": place_url,
-        "reviews": [],
-    }
+    return list(await asyncio.gather(*[_fetch_rating(p) for p in places]))
 
 
-async def _scrape_place_details(place_url: str) -> dict:
-    if not place_url:
-        return {}
+# ─── تنسيق رسالة واتساب ───────────────────────────────────────────────────────
 
-    async with _scrape_sem:
-        context = await _browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-            locale="ar-SA",
-        )
-        page = await context.new_page()
-        details: dict = {}
-
-        try:
-            full_url = (
-                place_url if place_url.startswith("http")
-                else f"https://www.google.com{place_url}"
-            )
-            await page.goto(full_url, wait_until="domcontentloaded",
-                            timeout=settings.scrape_timeout_ms)
-            await asyncio.sleep(1.5)
-
-            # رقم الهاتف
-            phone_el = await page.query_selector(
-                "button[data-item-id*='phone'] .Io6YTe, "
-                "button[aria-label*='هاتف'] .Io6YTe"
-            )
-            if phone_el:
-                details["phone"] = (await phone_el.text_content() or "").strip()
-
-            # الانتقال لتبويب التعليقات
-            try:
-                await page.get_by_role(
-                    "tab", name=re.compile("تقييم|review", re.I)
-                ).click(timeout=4000)
-                await asyncio.sleep(1.5)
-            except Exception:
-                pass
-
-            # جمع التعليقات
-            reviews: list[dict] = []
-            for rc in await page.query_selector_all("div.jftiEf, div[data-review-id]"):
-                try:
-                    text_el = await rc.query_selector("span.wiI7pd")
-                    r_el = await rc.query_selector(
-                        "span[aria-label*='نجم'], span[aria-label*='star']"
-                    )
-                    text = (await text_el.text_content() or "").strip() if text_el else ""
-                    r_label = (await r_el.get_attribute("aria-label") or "") if r_el else ""
-                    m = re.search(r"\d", r_label)
-                    star = int(m.group()) if m else None
-                    if text:
-                        reviews.append({"text": text[:300], "rating": star})
-                except Exception:
-                    pass
-            details["reviews"] = reviews
-
-        except Exception as exc:
-            log.warning("scraper.details_error", error=str(exc))
-        finally:
-            await page.close()
-            await context.close()
-
-    return details
-
-
-# ─── Format WhatsApp message ──────────────────────────────────────────────────
-
-async def _build_whatsapp_msg(
+def _build_whatsapp_msg(
     places: list[dict], place_type: str, total_found: int
 ) -> str:
     type_label = PLACE_LABEL_AR.get(place_type, place_type)
-    lines = [f"🔍 وجدت *{total_found}* {type_label} قريب منك، إليك أفضل {len(places)}:\n"]
+    lines = [
+        f"🔍 وجدت *{total_found}* {type_label} قريب منك، إليك أقرب {len(places)}:\n"
+    ]
 
     for i, p in enumerate(places, 1):
-        name = p.get("name", "غير معروف")
-        rating = p.get("rating")
-        count = p.get("user_ratings_total", 0)
-        address = p.get("formatted_address", "")
-        open_now = p.get("open_now")
+        name = p["name"]
+        dist = _fmt_distance(p["distance_m"])
+        address = p.get("address", "")
         phone = p.get("phone", "")
-        reviews_text = _format_reviews(
-            p.get("reviews", []), rating, count, name
-        )
+        oh = _parse_opening_hours(p.get("opening_hours"))
+        stars = _stars(p.get("rating"))
+        count = p.get("user_ratings_total", 0)
+        reviews = p.get("reviews", [])
 
-        open_status = (
-            "🟢 مفتوح الآن" if open_now is True
-            else "🔴 مغلق الآن" if open_now is False
-            else ""
+        # رابط خرائط قوقل مباشر
+        maps_url = (
+            f"https://maps.google.com/?q={p['lat']},{p['lng']}"
         )
 
         block = [f"*{i}. {name}*"]
-        block.append(_stars(rating) + (f" · {count:,} تقييم" if count else ""))
-        if address:
-            block.append(f"📍 {address}")
-        if open_status:
-            block.append(open_status)
+        if stars:
+            block.append(stars + (f" · {count:,} تقييم" if count else ""))
+        block.append(f"📍 {dist}" + (f" — {address}" if address else ""))
+        if oh:
+            block.append(oh)
         if phone:
             block.append(f"📞 {phone}")
-        if reviews_text:
-            block.append(f"\n💬 أبرز التعليقات:\n{reviews_text}")
 
+        # أبرز تعليق واحد (إذا توفر من الكاش)
+        top_review = next(
+            (r["text"][:180] for r in reviews if r.get("text")), None
+        )
+        if top_review:
+            block.append(f'💬 _"{top_review}"_')
+
+        block.append(f"🗺️ {maps_url}")
         lines.append("\n".join(block))
         lines.append("─────────────────")
 
-    lines.append("\n_أرسل رقم المكان للحصول على الاتجاهات._")
+    lines.append("\n_أرسل رقم المكان للحصول على المزيد من التفاصيل._")
     return "\n".join(lines)
 
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+# ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
@@ -517,9 +399,9 @@ async def health():
     return {
         "status": "ok",
         "redis": redis_ok,
-        "playwright": _browser is not None and _browser.is_connected(),
         "intent_model": classifier._model is not None,
         "appwrite": appwrite_db is not None,
+        "overpass": settings.overpass_url,
     }
 
 
@@ -528,54 +410,52 @@ async def search_places(req: SearchRequest):
     log.info("search.request", lat=req.lat, lng=req.lng, type=req.place_type)
 
     place_type = PLACE_TYPE_MAP.get(req.place_type, req.place_type)
-
     cache_key = _cache_key(req.lat, req.lng, place_type, req.radius)
-    cached = await redis_client.get(cache_key)
-    if cached:
-        log.info("search.cache_hit")
-        return SearchResponse(**json.loads(cached))
 
-    try:
-        raw_places = await _scrape_places_list(req.lat, req.lng, place_type, req.max_results)
-    except Exception as exc:
-        log.error("scraper.failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=f"خطأ في البحث: {exc}")
+    # ── طبقة 1: Redis Cache ─────────────────────────────────────────────────
+    if redis_client:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            log.info("search.cache_hit")
+            return SearchResponse(**json.loads(cached), from_cache=True)
+
+    # ── طبقة 2: Overpass API (1-3 ثانية) ──────────────────────────────────
+    raw_places = await _query_overpass(req.lat, req.lng, place_type, req.radius)
 
     total_found = len(raw_places)
     if total_found == 0:
         type_label = PLACE_LABEL_AR.get(place_type, place_type)
         return SearchResponse(
             places=[],
-            formatted_message=f"عذراً، لم أجد *{type_label}* قريباً. جرّب نوعاً آخر.",
+            formatted_message=(
+                f"عذراً، لم أجد *{type_label}* في نطاق {req.radius} متر.\n"
+                "جرّب: أرسل 'نطاق أوسع' أو ابحث عن نوع آخر."
+            ),
             total_found=0,
         )
 
-    top_places = sorted(raw_places, key=_rank, reverse=True)[: req.max_results]
+    top = raw_places[: req.max_results]
 
-    async def _enrich(place: dict) -> dict:
-        if place.get("place_url"):
-            try:
-                details = await _scrape_place_details(place["place_url"])
-                place.update(details)
-            except Exception as exc:
-                log.warning("enrich.failed", name=place.get("name"), error=str(exc))
-        return place
+    # ── طبقة 3: إضافة التقييمات من الكاش (لا يُبطئ إذا لم تتوفر) ──────────
+    top = await _enrich_from_ratings_cache(top)
 
-    enriched = list(await asyncio.gather(*[_enrich(p) for p in top_places]))
-    formatted_message = await _build_whatsapp_msg(enriched, place_type, total_found)
+    formatted_message = _build_whatsapp_msg(top, place_type, total_found)
 
     serializable = [
         {
-            "name": p.get("name"),
-            "rating": p.get("rating"),
-            "user_ratings_total": p.get("user_ratings_total"),
-            "formatted_address": p.get("formatted_address"),
-            "open_now": p.get("open_now"),
+            "name": p["name"],
+            "lat": p["lat"],
+            "lng": p["lng"],
+            "distance_m": p["distance_m"],
+            "address": p.get("address"),
             "phone": p.get("phone"),
-            "place_url": p.get("place_url"),
-            "reviews": p.get("reviews", [])[:3],
+            "opening_hours": p.get("opening_hours"),
+            "rating": p.get("rating"),
+            "user_ratings_total": p.get("user_ratings_total", 0),
+            "maps_url": f"https://maps.google.com/?q={p['lat']},{p['lng']}",
+            "reviews": p.get("reviews", [])[:2],
         }
-        for p in enriched
+        for p in top
     ]
 
     response_data = {
@@ -584,11 +464,13 @@ async def search_places(req: SearchRequest):
         "total_found": total_found,
     }
 
-    await redis_client.setex(
-        cache_key,
-        settings.cache_ttl_seconds,
-        json.dumps(response_data, ensure_ascii=False),
-    )
+    # حفظ في الكاش
+    if redis_client:
+        await redis_client.setex(
+            cache_key,
+            settings.cache_ttl_seconds,
+            json.dumps(response_data, ensure_ascii=False),
+        )
 
     asyncio.create_task(
         _log_search(req.phone_number, req.lat, req.lng, place_type, total_found)
@@ -612,11 +494,11 @@ async def extract_intent(req: IntentRequest):
                 raw_text=req.text,
                 suggested_reply=(
                     f"حسناً، سأبحث لك عن أقرب *{label}* 📍\n"
-                    "من فضلك أرسل موقعك الحالي."
+                    "أرسل موقعك الحالي."
                 ),
             )
 
-    # 2. النموذج المحلي (semantic similarity)
+    # 2. النموذج المحلي
     result = await asyncio.to_thread(classifier.classify, req.text)
 
     if result.place_type:
@@ -626,7 +508,7 @@ async def extract_intent(req: IntentRequest):
             raw_text=req.text,
             suggested_reply=(
                 f"حسناً، سأبحث لك عن أقرب *{result.place_name_ar}* 📍\n"
-                "من فضلك أرسل موقعك الحالي."
+                "أرسل موقعك الحالي."
             ),
         )
 
@@ -636,7 +518,7 @@ async def extract_intent(req: IntentRequest):
         raw_text=req.text,
         suggested_reply=(
             "عذراً، لم أفهم ما تبحث عنه. مثال:\n"
-            "• مطعم 🍽️\n• كافيه ☕\n• صيدلية 💊\n• مستشفى 🏥\n• محطة بنزين ⛽"
+            "• مطعم 🍽️\n• كافيه ☕\n• صيدلية 💊\n• محطة بنزين ⛽"
         ),
     )
 
