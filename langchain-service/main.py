@@ -336,52 +336,67 @@ async def _enrich_from_ratings_cache(places: list[dict]) -> list[dict]:
     return list(await asyncio.gather(*[_fetch_rating(p) for p in places]))
 
 
-# ─── تنسيق رسالة واتساب ───────────────────────────────────────────────────────
+# ─── تنسيق رسالة واتساب (محسّن) ─────────────────────────────────────────────
 
 def _build_whatsapp_msg(
     places: list[dict], place_type: str, total_found: int
 ) -> str:
     type_label = PLACE_LABEL_AR.get(place_type, place_type)
-    lines = [
-        f"🔍 وجدت *{total_found}* {type_label} قريب منك، إليك أقرب {len(places)}:\n"
-    ]
+    NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
+    lines = [f"🔍 وجدت *{total_found}* {type_label} — أقرب {len(places)}:\n"]
 
     for i, p in enumerate(places, 1):
-        name = p["name"]
-        dist = _fmt_distance(p["distance_m"])
-        address = p.get("address", "")
-        phone = p.get("phone", "")
-        oh = _parse_opening_hours(p.get("opening_hours"))
-        stars = _stars(p.get("rating"))
-        count = p.get("user_ratings_total", 0)
-        reviews = p.get("reviews", [])
+        name     = p["name"]
+        dist     = _fmt_distance(p["distance_m"])
+        address  = p.get("address", "")
+        phone    = p.get("phone", "")
+        oh       = p.get("opening_hours")
+        rating   = p.get("rating")
+        count    = p.get("user_ratings_total", 0)
+        reviews  = p.get("reviews", [])
+        maps_url = f"https://maps.google.com/?q={p['lat']},{p['lng']}"
+        num_icon = NUMS[i - 1] if i <= len(NUMS) else f"{i}."
 
-        # رابط خرائط قوقل مباشر
-        maps_url = (
-            f"https://maps.google.com/?q={p['lat']},{p['lng']}"
-        )
+        # ── السطر الأول: الرقم + الاسم ──────────────────────────────────────
+        block = [f"*{num_icon} {name}*"]
 
-        block = [f"*{i}. {name}*"]
-        if stars:
-            block.append(stars + (f" · {count:,} تقييم" if count else ""))
-        block.append(f"📍 {dist}" + (f" — {address}" if address else ""))
+        # ── التقييم + المسافة في سطر واحد ────────────────────────────────────
+        rating_str = f"⭐ {rating:.1f}" if rating else "☆ بدون تقييم"
+        count_str  = f" ({count:,})" if count else ""
+        block.append(f"{rating_str}{count_str}  ·  📍 {dist}")
+
+        # ── العنوان (إن وجد) ──────────────────────────────────────────────────
+        if address:
+            block.append(f"📌 {address}")
+
+        # ── ساعات العمل + الهاتف ──────────────────────────────────────────────
+        details = []
         if oh:
-            block.append(oh)
+            details.append(f"🕐 {oh}" if oh != "24/7" else "🟢 مفتوح 24 ساعة")
         if phone:
-            block.append(f"📞 {phone}")
+            details.append(f"📞 {phone}")
+        if details:
+            block.append("  ·  ".join(details))
 
-        # أبرز تعليق واحد (إذا توفر من الكاش)
-        top_review = next(
-            (r["text"][:180] for r in reviews if r.get("text")), None
-        )
+        # ── أبرز تعليق (من الكاش إذا توفر) ──────────────────────────────────
+        top_review = next((r["text"][:160] for r in reviews if r.get("text")), None)
         if top_review:
             block.append(f'💬 _"{top_review}"_')
 
+        # ── رابط الخريطة ─────────────────────────────────────────────────────
         block.append(f"🗺️ {maps_url}")
-        lines.append("\n".join(block))
-        lines.append("─────────────────")
 
-    lines.append("\n_أرسل رقم المكان للحصول على المزيد من التفاصيل._")
+        lines.append("\n".join(block))
+        lines.append("─────")  # فاصل قصير
+
+    # ── رسالة المتابعة (Fix #2) ───────────────────────────────────────────────
+    lines.append(
+        "\n💡 *بحث جديد؟*\n"
+        "• اكتب نوعاً آخر مثل: _كافيه_ أو _صيدلية_\n"
+        "• اكتب *قائمة* لعرض كل الخيارات\n"
+        "• أرسل 📍 موقعاً جديداً للبحث من مكان آخر"
+    )
     return "\n".join(lines)
 
 
@@ -599,6 +614,44 @@ async def _log_search(phone, lat, lng, place_type, count):
         )
     except Exception as exc:
         log.warning("appwrite.log_failed", error=str(exc))
+
+
+# ─── Session endpoints (Fix #3: Redis بدل static data في n8n) ────────────────
+
+SESSION_TTL = 86400  # 24 ساعة
+
+
+class SessionData(BaseModel):
+    lat: float
+    lng: float
+    city: str | None = None
+    last_place_type: str | None = None
+    last_place_label: str | None = None
+
+
+@app.get("/session/{phone}")
+async def get_session(phone: str):
+    """جلب جلسة المستخدم من Redis."""
+    if not redis_client:
+        return {"found": False}
+    raw = await redis_client.get(f"wean:session:{phone}")
+    if not raw:
+        return {"found": False}
+    data = json.loads(raw)
+    return {"found": True, **data}
+
+
+@app.post("/session/{phone}")
+async def save_session(phone: str, session: SessionData):
+    """حفظ جلسة المستخدم في Redis (تدوم 24 ساعة)."""
+    if not redis_client:
+        return {"ok": False, "reason": "redis_unavailable"}
+    await redis_client.setex(
+        f"wean:session:{phone}",
+        SESSION_TTL,
+        json.dumps(session.model_dump(), ensure_ascii=False),
+    )
+    return {"ok": True}
 
 
 from admin_routes import router as admin_router
