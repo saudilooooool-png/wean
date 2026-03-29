@@ -135,6 +135,7 @@ class SearchRequest(BaseModel):
     radius: int = Field(default=2000, ge=100, le=50000)
     max_results: int = Field(default=5, ge=1, le=10)
     phone_number: str | None = None
+    sort_by: str = Field(default="distance")  # "distance" | "rating"
 
 
 class SearchResponse(BaseModel):
@@ -339,12 +340,15 @@ async def _enrich_from_ratings_cache(places: list[dict]) -> list[dict]:
 # ─── تنسيق رسالة واتساب (محسّن) ─────────────────────────────────────────────
 
 def _build_whatsapp_msg(
-    places: list[dict], place_type: str, total_found: int
+    places: list[dict], place_type: str, total_found: int, sort_by: str = "distance"
 ) -> str:
     type_label = PLACE_LABEL_AR.get(place_type, place_type)
     NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
-    lines = [f"🔍 وجدت *{total_found}* {type_label} — أقرب {len(places)}:\n"]
+    if sort_by == "rating":
+        lines = [f"⭐ وجدت *{total_found}* {type_label} — الأعلى تقييماً:\n"]
+    else:
+        lines = [f"🔍 وجدت *{total_found}* {type_label} — أقرب {len(places)}:\n"]
 
     for i, p in enumerate(places, 1):
         name     = p["name"]
@@ -390,11 +394,13 @@ def _build_whatsapp_msg(
         lines.append("\n".join(block))
         lines.append("─────")  # فاصل قصير
 
-    # ── رسالة المتابعة (Fix #2) ───────────────────────────────────────────────
+    # ── رسالة المتابعة ────────────────────────────────────────────────────────
     lines.append(
-        "\n💡 *بحث جديد؟*\n"
-        "• اكتب نوعاً آخر مثل: _كافيه_ أو _صيدلية_\n"
+        "\n💡 *ماذا بعد؟*\n"
+        "• اكتب نوعاً آخر: _كافيه_ أو _صيدلية_\n"
         "• اكتب *قائمة* لعرض كل الخيارات\n"
+        "• اكتب *حفظ 1* .. *حفظ 5* لإضافة مكان للمفضلة ⭐\n"
+        "• اكتب *مفضلتي* لعرض أماكنك المحفوظة\n"
         "• أرسل 📍 موقعاً جديداً للبحث من مكان آخر"
     )
     return "\n".join(lines)
@@ -505,12 +511,19 @@ async def search_places(req: SearchRequest):
             raw_places = expanded
             total_found = len(raw_places)
 
-    top = raw_places[: req.max_results]
+    # ── طبقة 3: إضافة التقييمات من الكاش ──────────────────────────────────
+    # للترتيب بالتقييم: نأخذ pool أكبر ثم نُرتّب ونقلّص
+    pool_size = req.max_results * 3 if req.sort_by == "rating" else req.max_results
+    pool = await _enrich_from_ratings_cache(raw_places[:pool_size])
 
-    # ── طبقة 3: إضافة التقييمات من الكاش (لا يُبطئ إذا لم تتوفر) ──────────
-    top = await _enrich_from_ratings_cache(top)
+    # ── ترتيب النتائج ────────────────────────────────────────────────────────
+    if req.sort_by == "rating":
+        pool.sort(key=lambda x: (-(x.get("rating") or 0), x["distance_m"]))
+    # else: المسافة مرتبة بالفعل من Overpass
 
-    formatted_message = _build_whatsapp_msg(top, place_type, total_found)
+    top = pool[: req.max_results]
+
+    formatted_message = _build_whatsapp_msg(top, place_type, total_found, req.sort_by)
 
     serializable = [
         {
@@ -546,6 +559,11 @@ async def search_places(req: SearchRequest):
     asyncio.create_task(
         _log_search(req.phone_number, req.lat, req.lng, place_type, total_found)
     )
+    # حفظ النتائج في الجلسة (للمفضلة + التفاصيل بالرقم)
+    if req.phone_number:
+        asyncio.create_task(
+            _update_session_results(req.phone_number, serializable, place_type)
+        )
 
     return SearchResponse(**response_data)
 
@@ -619,6 +637,21 @@ async def _log_search(phone, lat, lng, place_type, count):
 # ─── Session endpoints (Fix #3: Redis بدل static data في n8n) ────────────────
 
 SESSION_TTL = 86400  # 24 ساعة
+FAVORITES_TTL = 86400 * 90  # 90 يوم
+
+
+async def _update_session_results(phone: str, results: list[dict], place_type: str):
+    """يحفظ آخر نتائج بحث في الجلسة لاستخدامها بالمفضلة وعرض التفاصيل."""
+    if not redis_client:
+        return
+    key = f"wean:session:{phone}"
+    raw = await redis_client.get(key)
+    if not raw:
+        return
+    session = json.loads(raw)
+    session["last_results"] = results[:5]
+    session["last_place_type"] = place_type
+    await redis_client.setex(key, SESSION_TTL, json.dumps(session, ensure_ascii=False))
 
 
 class SessionData(BaseModel):
@@ -627,6 +660,7 @@ class SessionData(BaseModel):
     city: str | None = None
     last_place_type: str | None = None
     last_place_label: str | None = None
+    last_results: list[dict] | None = None  # آخر نتائج بحث (للمفضلة + التفاصيل)
 
 
 @app.get("/session/{phone}")
@@ -652,6 +686,63 @@ async def save_session(phone: str, session: SessionData):
         json.dumps(session.model_dump(), ensure_ascii=False),
     )
     return {"ok": True}
+
+
+# ─── Favorites endpoints ──────────────────────────────────────────────────────
+
+class FavoritePlace(BaseModel):
+    name: str
+    lat: float
+    lng: float
+    maps_url: str
+    place_type: str | None = None
+    rating: float | None = None
+    phone: str | None = None
+    address: str | None = None
+
+
+@app.get("/favorites/{phone}")
+async def get_favorites(phone: str):
+    """جلب قائمة المفضلة للمستخدم."""
+    if not redis_client:
+        return {"favorites": [], "count": 0}
+    raw = await redis_client.get(f"wean:favorites:{phone}")
+    if not raw:
+        return {"favorites": [], "count": 0}
+    favs = json.loads(raw)
+    return {"favorites": favs, "count": len(favs)}
+
+
+@app.post("/favorites/{phone}")
+async def save_favorite(phone: str, place: FavoritePlace):
+    """إضافة مكان للمفضلة — يرفض التكرار."""
+    if not redis_client:
+        return {"ok": False, "reason": "redis_unavailable"}
+    key = f"wean:favorites:{phone}"
+    raw = await redis_client.get(key)
+    favorites: list = json.loads(raw) if raw else []
+    if any(f["name"] == place.name for f in favorites):
+        return {"ok": False, "reason": "already_saved", "total": len(favorites)}
+    favorites.append(place.model_dump())
+    await redis_client.setex(key, FAVORITES_TTL, json.dumps(favorites, ensure_ascii=False))
+    return {"ok": True, "total": len(favorites)}
+
+
+@app.delete("/favorites/{phone}/{index}")
+async def remove_favorite(phone: str, index: int):
+    """إزالة مكان من المفضلة بالترتيب (0-based)."""
+    if not redis_client:
+        return {"ok": False}
+    key = f"wean:favorites:{phone}"
+    raw = await redis_client.get(key)
+    if not raw:
+        return {"ok": False, "reason": "empty"}
+    favorites = json.loads(raw)
+    if not (0 <= index < len(favorites)):
+        return {"ok": False, "reason": "invalid_index"}
+    removed = favorites.pop(index)
+    await redis_client.setex(key, FAVORITES_TTL, json.dumps(favorites, ensure_ascii=False))
+    return {"ok": True, "removed_name": removed["name"], "total": len(favorites)}
 
 
 from admin_routes import router as admin_router
