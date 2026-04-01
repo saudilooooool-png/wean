@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>وين أروح - لوحة الأدمن (HTML)</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+      .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+      .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+      h1,h2 { margin: 0 0 12px; }
+      .row { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 12px; }
+      .stat { background: #f1f5f9; border-radius: 10px; padding: 10px; }
+      button { background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      input, textarea, select { width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px; }
+      .muted { color: #475569; font-size: 14px; }
+      pre { background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>لوحة الأدمن HTML</h1>
+      <p class="muted">واجهة HTML مباشرة بدون Next.js. API الحالي: <b id="api-url"></b></p>
+
+      <div class="card">
+        <h2>الإحصائيات</h2>
+        <div class="row" id="stats"></div>
+        <button onclick="loadStats()">تحديث الإحصائيات</button>
+      </div>
+
+      <div class="card">
+        <h2>آخر جهات الاتصال</h2>
+        <button onclick="loadContacts()">تحميل جهات الاتصال</button>
+        <pre id="contacts-out">-</pre>
+      </div>
+
+      <div class="card">
+        <h2>إدارة الإعدادات</h2>
+        <textarea id="settings-json" rows="10">{}</textarea>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button onclick="loadSettings()">تحميل الإعدادات</button>
+          <button onclick="saveSettings()">حفظ الإعدادات</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>اعتماد معلن</h2>
+        <div class="row">
+          <div><label>Advertiser ID</label><input id="adv-id" placeholder="مثال: 123" /></div>
+          <div><label>المدة بالأيام</label><input id="dur" type="number" value="30" /></div>
+          <div><label>الحد الأسبوعي</label><input id="weekly" type="number" value="2" /></div>
+          <div><label>رسوم الخدمة</label><input id="fee" type="number" value="500" /></div>
+        </div>
+        <div style="margin-top:10px;"><button onclick="approveAdvertiser()">اعتماد المعلن</button></div>
+        <pre id="adv-out">-</pre>
+      </div>
+    </div>
+
+    <script>
+      const API_BASE = window.location.hostname === "localhost" ? "http://localhost:8000" : `${window.location.protocol}//${window.location.hostname}:8000`;
+      document.getElementById("api-url").textContent = API_BASE;
+
+      async function api(path, options = {}) {
+        const res = await fetch(`${API_BASE}${path}`, {
+          headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+          ...options
+        });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        return res.json();
+      }
+
+      function setPre(id, data) { document.getElementById(id).textContent = JSON.stringify(data, null, 2); }
+
+      async function loadStats() {
+        try {
+          const stats = await api("/admin/stats");
+          const rows = [
+            ["إجمالي المتواصلين", stats.totalContacts],
+            ["عمليات البحث اليوم", stats.searchesToday],
+            ["المعلنين النشطين", stats.activeAdvertisers],
+            ["الرسائل المرسلة", stats.messagesSent]
+          ];
+          const holder = document.getElementById("stats");
+          holder.innerHTML = rows.map(([k,v]) => `<div class="stat"><div>${k}</div><b>${v ?? 0}</b></div>`).join("");
+        } catch (e) {
+          alert("تعذر تحميل الإحصائيات: " + e.message);
+        }
+      }
+
+      async function loadContacts() {
+        try { setPre("contacts-out", await api("/admin/contacts?page=1&query=")); }
+        catch (e) { alert("تعذر تحميل جهات الاتصال: " + e.message); }
+      }
+
+      async function loadSettings() {
+        try {
+          const data = await api("/admin/settings");
+          document.getElementById("settings-json").value = JSON.stringify(data, null, 2);
+        } catch (e) {
+          alert("تعذر تحميل الإعدادات: " + e.message);
+        }
+      }
+
+      async function saveSettings() {
+        try {
+          const payload = JSON.parse(document.getElementById("settings-json").value || "{}");
+          setPre("contacts-out", await api("/admin/settings", { method: "PUT", body: JSON.stringify(payload) }));
+          alert("تم حفظ الإعدادات بنجاح");
+        } catch (e) {
+          alert("فشل حفظ الإعدادات: " + e.message);
+        }
+      }
+
+      async function approveAdvertiser() {
+        const id = document.getElementById("adv-id").value.trim();
+        if (!id) return alert("أدخل Advertiser ID");
+        const payload = {
+          durationDays: Number(document.getElementById("dur").value || 30),
+          maxSendsPerWeek: Number(document.getElementById("weekly").value || 2),
+          serviceFee: Number(document.getElementById("fee").value || 500)
+        };
+        try {
+          setPre("adv-out", await api(`/admin/advertisers/${id}/approve`, { method: "POST", body: JSON.stringify(payload) }));
+        } catch (e) {
+          alert("فشل اعتماد المعلن: " + e.message);
+        }
+      }
+
+      loadStats();
+      loadContacts();
+    </script>
+  </body>
+</html>

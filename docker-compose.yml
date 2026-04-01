@@ -251,15 +251,12 @@ services:
     networks:
       - wean_network
 
-  # ─── Admin Dashboard (Next.js) ─────────────────────────────────────────────
+  # ─── Admin Dashboard (Static HTML + Nginx) ────────────────────────────────
   admin:
     build: ./admin
     container_name: wean_admin
     ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://langchain-service:8000
-      - NEXT_PUBLIC_EVOLUTION_URL=${EVOLUTION_SERVER_URL:-http://localhost:8080}
+      - "3000:80"
     depends_on:
       - langchain-service
     restart: unless-stopped
