@@ -259,6 +259,11 @@ services:
       - "3000:80"
     depends_on:
       - langchain-service
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
     networks:
       - wean_network
