@@ -38,7 +38,7 @@ export default function AdvertisersPage() {
   const [actionLoading, setActionLoading] = useState(false)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
-  // Self-service form state
+  // حالة نموذج التسجيل الذاتي
   const [showSelfService, setShowSelfService] = useState(false)
   const [selfForm, setSelfForm] = useState({
     name: '',

@@ -28,7 +28,7 @@ export default function ContactsPage() {
   const [directMsg, setDirectMsg] = useState('')
   const [msgSent, setMsgSent] = useState(false)
 
-  // Debounce filter
+  // تأخير البحث لتحسين الأداء
   useEffect(() => {
     const t = setTimeout(() => setDebouncedFilter(filter), 400)
     return () => clearTimeout(t)

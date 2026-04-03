@@ -21,14 +21,14 @@ const durationOptions = [
   { value: 90, label: '90 يوم' },
 ]
 
-// Fake audience count calculation
+// حساب عدد الجمهور التقريبي
 function calcAudience(type: string, searchType: string, region: string, days: number) {
   let base = 4827
   if (type === 'search_type') base = Math.floor(base * 0.45)
   if (type === 'region') base = Math.floor(base * 0.3)
   if (days === 7) base = Math.floor(base * 0.4)
   else if (days === 30) base = Math.floor(base * 0.7)
-  // Anti-spam: remove ~15%
+  // فلتر السبام: إزالة ~15%
   const afterSpam = Math.floor(base * 0.85)
   return { raw: base, filtered: afterSpam }
 }
@@ -40,7 +40,7 @@ export default function NewBroadcastPage() {
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Form state
+  // حالة النموذج
   const [name, setName] = useState('')
   const [audienceType, setAudienceType] = useState<'all' | 'search_type' | 'region'>('all')
   const [searchType, setSearchType] = useState(searchTypes[0])

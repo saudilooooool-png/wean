@@ -61,7 +61,7 @@ export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState('7d')
 
   useEffect(() => {
-    // Simulate loading
+    // محاكاة التحميل
     const timer = setTimeout(() => setLoading(false), 800)
     return () => clearTimeout(timer)
   }, [])

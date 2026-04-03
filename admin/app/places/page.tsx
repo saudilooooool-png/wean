@@ -41,7 +41,7 @@ export default function PlacesPage() {
 
   const loadPlaces = async () => {
     setLoading(true)
-    // Simulate API call
+    // محاكاة طلب API
     await new Promise(resolve => setTimeout(resolve, 500))
     setPlaces(mockPlaces)
     setLoading(false)
