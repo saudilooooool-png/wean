@@ -14,12 +14,16 @@ import {
   Menu,
   Wifi,
   WifiOff,
+  MapPin,
+  BarChart3,
 } from 'lucide-react'
 
 const navLinks = [
   { href: '/', label: 'لوحة التحكم', icon: LayoutDashboard },
   { href: '/whatsapp', label: 'واتساب', icon: MessageSquare },
   { href: '/contacts', label: 'جهات الاتصال', icon: Users },
+  { href: '/places', label: 'الأماكن', icon: MapPin },
+  { href: '/analytics', label: 'التحليلات', icon: BarChart3 },
   { href: '/broadcasts', label: 'الحملات', icon: Megaphone },
   { href: '/advertisers', label: 'المعلنين', icon: Store },
   { href: '/settings', label: 'الإعدادات', icon: Settings },
