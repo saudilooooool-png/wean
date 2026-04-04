@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>وين أروح — لوحة التحكم</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+*{font-family:'Segoe UI',Tahoma,sans-serif}
+.sidebar{background:#1e1b4b;width:220px;min-height:100vh;position:fixed;right:0;top:0;z-index:50}
+.content{margin-right:220px}
+.nav-btn{display:flex;align-items:center;gap:10px;color:#a5b4fc;padding:10px 14px;border-radius:8px;width:100%;text-align:right;cursor:pointer;border:none;background:none;font-size:14px}
+.nav-btn:hover,.nav-btn.active{background:rgba(99,102,241,.2);color:#fff}
+.page{display:none}.page.show{display:block}
+.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08);margin-bottom:16px}
+.btn{padding:8px 16px;border-radius:8px;cursor:pointer;border:none;font-size:13px}
+.btn-primary{background:#6366f1;color:#fff}.btn-primary:hover{background:#4f46e5}
+.btn-danger{background:#ef4444;color:#fff}.btn-danger:hover{background:#dc2626}
+.btn-success{background:#22c55e;color:#fff}
+.btn-outline{background:#fff;border:1px solid #e2e8f0;color:#374151}.btn-outline:hover{background:#f9fafb}
+.badge{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+.badge-green{background:#dcfce7;color:#16a34a}
+.badge-red{background:#fee2e2;color:#dc2626}
+.badge-yellow{background:#fef9c3;color:#b45309}
+.badge-blue{background:#dbeafe;color:#1d4ed8}
+table{width:100%;border-collapse:collapse}
+th{background:#f8fafc;padding:10px 12px;text-align:right;font-size:12px;color:#64748b;font-weight:600;border-bottom:1px solid #e2e8f0}
+td{padding:10px 12px;font-size:13px;border-bottom:1px solid #f1f5f9}
+tr:hover td{background:#fafafa}
+input,select,textarea{border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;width:100%;font-size:13px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.1)}
+.toast{position:fixed;bottom:20px;left:20px;padding:10px 18px;border-radius:10px;color:#fff;font-size:13px;z-index:9999;transition:opacity .3s;opacity:0;pointer-events:none}
+.toast.show{opacity:1}
+.stat{background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+</style>
+</head>
+<body style="background:#f1f5f9">
+
+<!-- Sidebar -->
+<div class="sidebar flex flex-col p-4">
+  <div style="color:#fff;font-weight:700;font-size:18px;margin-bottom:24px;padding:8px 4px">🗺️ وين أروح</div>
+  <nav class="flex flex-col gap-1 flex-1">
+    <button onclick="nav('dashboard')" id="n-dashboard" class="nav-btn active">📊 داشبورد</button>
+    <button onclick="nav('whatsapp')" id="n-whatsapp" class="nav-btn">📱 واتساب</button>
+    <button onclick="nav('contacts')" id="n-contacts" class="nav-btn">👥 جهات الاتصال</button>
+    <button onclick="nav('broadcasts')" id="n-broadcasts" class="nav-btn">📢 البث</button>
+    <button onclick="nav('advertisers')" id="n-advertisers" class="nav-btn">🏪 المعلنون</button>
+    <button onclick="nav('settings')" id="n-settings" class="nav-btn">⚙️ الإعدادات</button>
+  </nav>
+  <div style="font-size:11px;color:#6366f1;padding:4px">
+    <span id="api-dot">⚪</span> <span id="api-status">غير متصل</span>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="content p-6">
+
+  <!-- Header -->
+  <div style="background:#fff;border-radius:12px;padding:14px 20px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+    <h1 id="page-title" style="font-size:18px;font-weight:700;color:#1e1b4b">داشبورد</h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button onclick="reload()" class="btn btn-outline" style="padding:6px 12px">🔄 تحديث</button>
+      <span id="health-tag" class="badge badge-yellow">جاري التحقق...</span>
+    </div>
+  </div>
+
+  <!-- DASHBOARD -->
+  <div id="p-dashboard" class="page show">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px">
+      <div class="stat"><div id="s-users" style="font-size:28px;font-weight:700;color:#6366f1">—</div><div style="font-size:12px;color:#64748b;margin-top:4px">إجمالي المستخدمين</div></div>
+      <div class="stat"><div id="s-today" style="font-size:28px;font-weight:700;color:#22c55e">—</div><div style="font-size:12px;color:#64748b;margin-top:4px">بحث اليوم</div></div>
+      <div class="stat"><div id="s-total" style="font-size:28px;font-weight:700;color:#f59e0b">—</div><div style="font-size:12px;color:#64748b;margin-top:4px">إجمالي البحث</div></div>
+      <div class="stat"><div id="s-bc" style="font-size:28px;font-weight:700;color:#3b82f6">—</div><div style="font-size:12px;color:#64748b;margin-top:4px">بث مُرسل</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card"><h3 style="font-weight:600;margin-bottom:12px">أكثر الأنواع بحثاً</h3><div id="top-types"><span style="color:#94a3b8;font-size:13px">جاري التحميل...</span></div></div>
+      <div class="card"><h3 style="font-weight:600;margin-bottom:12px">حالة النظام</h3><div id="health-details" style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><span style="color:#94a3b8;font-size:13px">جاري التحميل...</span></div></div>
+    </div>
+  </div>
+
+  <!-- WHATSAPP -->
+  <div id="p-whatsapp" class="page">
+    <div class="card">
+      <h3 style="font-weight:600;margin-bottom:4px">📋 متطلبات الاتصال</h3>
+      <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:12px;margin-bottom:16px;font-size:13px;line-height:1.8">
+        <strong>⚠️ قبل الاتصال تأكد من:</strong><br>
+        1. لديك رقم هاتف <strong>حقيقي</strong> مع تطبيق واتساب مثبّت ونشط<br>
+        2. الرقم <strong>غير مرتبط</strong> بأي جهاز واتساب حالياً<br>
+        3. الرقم <strong>ليس وهمياً</strong> أو virtual — يجب هاتف فعلي<br>
+        4. افتح واتساب ← الإعدادات ← الأجهزة المرتبطة ← ربط جهاز ← امسح QR
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <div>
+          <h4 style="font-weight:600;margin-bottom:10px">حالة الاتصال</h4>
+          <div id="wa-state"><span style="color:#94a3b8;font-size:13px">جاري التحقق...</span></div>
+          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+            <button onclick="connectWA()" class="btn btn-primary">🔗 اتصال / تحديث QR</button>
+            <button onclick="disconnectWA()" class="btn btn-danger">قطع الاتصال</button>
+          </div>
+        </div>
+        <div>
+          <h4 style="font-weight:600;margin-bottom:10px">كود QR</h4>
+          <div id="qr-box" style="min-height:180px;display:flex;align-items:center;justify-content:center;background:#f8fafc;border-radius:10px;border:2px dashed #e2e8f0">
+            <span style="color:#94a3b8;font-size:13px">اضغط "اتصال" للحصول على QR</span>
+          </div>
+          <p style="font-size:11px;color:#94a3b8;margin-top:6px;text-align:center">امسح الكود بتطبيق واتساب على هاتفك</p>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="font-weight:600;margin-bottom:12px">إنشاء Instance جديد</h3>
+      <div style="display:flex;gap:10px">
+        <input id="inst-name" type="text" value="wean_bot" style="max-width:240px">
+        <button onclick="createInst()" class="btn btn-primary">إنشاء</button>
+      </div>
+      <div id="inst-result" style="margin-top:10px;font-size:13px"></div>
+    </div>
+  </div>
+
+  <!-- CONTACTS -->
+  <div id="p-contacts" class="page">
+    <div class="card" style="padding:14px 20px;margin-bottom:12px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <input id="c-search" type="text" placeholder="🔍 ابحث برقم..." oninput="filterC()" style="max-width:220px">
+        <select id="c-filter" onchange="filterC()" style="max-width:150px">
+          <option value="">الكل</option><option value="active">نشط</option><option value="off">متوقف</option>
+        </select>
+        <button onclick="exportCSV()" class="btn btn-outline" style="margin-right:auto">📥 تصدير CSV</button>
+      </div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table><thead><tr><th>رقم الهاتف</th><th>عمليات البحث</th><th>آخر تفاعل</th><th>الحالة</th><th>إجراء</th></tr></thead>
+      <tbody id="c-tbody"><tr><td colspan="5" style="text-align:center;padding:24px;color:#94a3b8">جاري التحميل...</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- BROADCASTS -->
+  <div id="p-broadcasts" class="page">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card">
+        <h3 style="font-weight:600;margin-bottom:14px">إنشاء حملة بث</h3>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">المستلمون</label>
+          <select id="bc-target"><option value="all">الكل</option><option value="active_7d">النشطون (7 أيام)</option><option value="active_30d">النشطون (30 يوم)</option></select></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">الرسالة</label>
+          <textarea id="bc-msg" rows="6" oninput="previewMsg()" placeholder="اكتب رسالة البث...\n*نص عريض* و _نص مائل_"></textarea></div>
+          <button onclick="sendBC()" class="btn btn-primary">📤 إرسال البث</button>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h4 style="font-weight:600;margin-bottom:10px">معاينة الرسالة</h4>
+          <div style="background:#e5ddd5;border-radius:12px;padding:16px;min-height:120px">
+            <div id="bc-preview" style="background:#fff;border-radius:16px 16px 4px 16px;padding:10px 14px;font-size:13px;white-space:pre-wrap;max-width:280px;box-shadow:0 1px 2px rgba(0,0,0,.1)">اكتب الرسالة للمعاينة</div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:0">
+          <h4 style="font-weight:600;margin-bottom:10px">سجل البث</h4>
+          <div id="bc-hist"><span style="color:#94a3b8;font-size:13px">جاري التحميل...</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADVERTISERS -->
+  <div id="p-advertisers" class="page">
+    <div class="card" style="padding:0;overflow:hidden">
+      <table><thead><tr><th>الاسم</th><th>الهاتف</th><th>نوع الإعلان</th><th>التاريخ</th><th>الحالة</th><th>إجراء</th></tr></thead>
+      <tbody id="adv-tbody"><tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8">جاري التحميل...</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="p-settings" class="page">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card">
+        <h3 style="font-weight:600;margin-bottom:14px">🔌 إعدادات الاتصال</h3>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">رابط Wean API</label>
+          <input id="cfg-api" type="text" placeholder="http://localhost:8000"></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">رابط Evolution API</label>
+          <input id="cfg-evo" type="text" placeholder="http://localhost:8080"></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">Evolution API Key</label>
+          <input id="cfg-key" type="text" placeholder="evolution_api_key_change_me"></div>
+          <button onclick="saveConn()" class="btn btn-primary">💾 حفظ إعدادات الاتصال</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="font-weight:600;margin-bottom:14px">🤖 إعدادات البوت</h3>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">نطاق البحث الافتراضي (متر)</label>
+          <input id="cfg-radius" type="number" value="2000" min="500" max="20000"></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">عدد النتائج</label>
+          <input id="cfg-results" type="number" value="5" min="1" max="10"></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">رسالة الترحيب</label>
+          <textarea id="cfg-welcome" rows="3" placeholder="أهلاً في وين أروح..."></textarea></div>
+          <button onclick="saveBotCfg()" class="btn btn-primary">💾 حفظ إعدادات البوت</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="font-weight:600;margin-bottom:14px">🧪 اختبار البوت</h3>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">اختبار كشف النية</label>
+          <div style="display:flex;gap:8px"><input id="t-intent" placeholder="مثال: أريد مطعم"><button onclick="testIntent()" class="btn btn-primary" style="white-space:nowrap">اختبر</button></div>
+          <div id="t-intent-res" style="font-size:12px;background:#f8fafc;border-radius:8px;padding:8px;margin-top:6px;display:none"></div></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">اختبار البحث</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+            <input id="t-lat" type="number" placeholder="24.7136" step="0.001">
+            <input id="t-lng" type="number" placeholder="46.6753" step="0.001">
+          </div>
+          <select id="t-type" style="margin-bottom:6px"><option value="restaurant">مطعم</option><option value="cafe">مقهى</option><option value="pharmacy">صيدلية</option><option value="mosque">مسجد</option></select>
+          <button onclick="testSearch()" class="btn btn-primary" style="width:100%">🔍 بحث تجريبي</button>
+          <div id="t-search-res" style="font-size:12px;background:#f8fafc;border-radius:8px;padding:8px;margin-top:6px;display:none;max-height:120px;overflow:auto"></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="font-weight:600;margin-bottom:14px">🛡️ مكافحة الإزعاج</h3>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">فترة الانتظار بين البثات (يوم)</label>
+          <input id="cfg-cool" type="number" value="7" min="1"></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">وقت البدء (ساعة)</label>
+          <input id="cfg-sh" type="number" value="9" min="0" max="23"></div>
+          <div><label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px">وقت الإيقاف (ساعة)</label>
+          <input id="cfg-eh" type="number" value="21" min="0" max="23"></div>
+          <button onclick="saveSpam()" class="btn btn-primary">💾 حفظ</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end content -->
+
+<div id="toast" class="toast"></div>
+<script>
+let API = localStorage.getItem('w_api') || 'http://localhost:8000';
+let EVO = localStorage.getItem('w_evo') || 'http://localhost:8080';
+let EKEY = localStorage.getItem('w_ekey') || 'evolution_api_key_change_me';
+let INST = 'wean_bot';
+let allC = [];
+
+async function req(url, opts={}) {
+  const r = await fetch(url, {headers:{'Content-Type':'application/json',...(opts.headers||{})}, ...opts});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+function toast(msg, type='ok') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = type === 'ok' ? '#22c55e' : '#ef4444';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+function nav(p) {
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('show'));
+  document.querySelectorAll('.nav-btn').forEach(x => x.classList.remove('active'));
+  document.getElementById('p-'+p).classList.add('show');
+  document.getElementById('n-'+p).classList.add('active');
+  const titles = {dashboard:'داشبورد',whatsapp:'واتساب',contacts:'جهات الاتصال',broadcasts:'البث',advertisers:'المعلنون',settings:'الإعدادات'};
+  document.getElementById('page-title').textContent = titles[p]||p;
+  if (p==='dashboard') loadDash();
+  else if (p==='contacts') loadContacts();
+  else if (p==='broadcasts') {loadBCHist();}
+  else if (p==='advertisers') loadAdv();
+  else if (p==='settings') loadSettings();
+  else if (p==='whatsapp') loadWA();
+}
+function reload() { nav(document.querySelector('.nav-btn.active').id.replace('n-','')); }
+
+// Health
+async function checkHealth() {
+  try {
+    const h = await req(API + '/health');
+    document.getElementById('health-tag').className = 'badge badge-green';
+    document.getElementById('health-tag').textContent = '✅ متصل';
+    document.getElementById('api-dot').textContent = '🟢';
+    document.getElementById('api-status').textContent = API.replace('http://','').substring(0,18);
+    document.getElementById('health-details').innerHTML = `
+      <div style="text-align:center;padding:10px;background:#f0fdf4;border-radius:8px"><div style="color:#16a34a;font-weight:600;font-size:12px">Redis</div><div style="font-size:11px">${h.redis?'✅':'❌'}</div></div>
+      <div style="text-align:center;padding:10px;background:#eff6ff;border-radius:8px"><div style="color:#1d4ed8;font-weight:600;font-size:12px">AI Model</div><div style="font-size:11px">${h.intent_model?'✅':'❌'}</div></div>
+      <div style="text-align:center;padding:10px;background:#faf5ff;border-radius:8px"><div style="color:#7c3aed;font-weight:600;font-size:12px">Appwrite</div><div style="font-size:11px">${h.appwrite?'✅':'⚠️'}</div></div>
+      <div style="text-align:center;padding:10px;background:#fff7ed;border-radius:8px"><div style="color:#c2410c;font-weight:600;font-size:12px">Overpass</div><div style="font-size:11px">✅</div></div>`;
+  } catch(e) {
+    document.getElementById('health-tag').className = 'badge badge-red';
+    document.getElementById('health-tag').textContent = '❌ غير متصل';
+    document.getElementById('api-dot').textContent = '🔴';
+    document.getElementById('api-status').textContent = 'تحقق من الإعدادات';
+    document.getElementById('health-details').innerHTML = '<span style="color:#ef4444;font-size:13px">تعذّر الاتصال بـ API — تحقق من رابط الخدمة في الإعدادات</span>';
+  }
+}
+
+// Dashboard
+async function loadDash() {
+  checkHealth();
+  try {
+    const s = await req(API + '/admin/stats');
+    document.getElementById('s-users').textContent = (s.total_users||0).toLocaleString();
+    document.getElementById('s-today').textContent = (s.searches_today||0).toLocaleString();
+    document.getElementById('s-total').textContent = (s.searches_total||0).toLocaleString();
+    document.getElementById('s-bc').textContent = (s.broadcasts_sent||0).toLocaleString();
+    if (s.top_place_types && s.top_place_types.length) {
+      const lbl = {restaurant:'🍽️ مطعم',cafe:'☕ مقهى',pharmacy:'💊 صيدلية',hospital:'🏥 مستشفى',supermarket:'🛒 سوبرماركت',mosque:'🕌 مسجد',gas_station:'⛽ بنزين',atm:'🏧 صراف',bakery:'🥖 مخبز',park:'🌳 حديقة',lodging:'🏨 فندق'};
+      document.getElementById('top-types').innerHTML = s.top_place_types.map(t=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:13px"><span>${lbl[t.type]||t.type}</span><span style="color:#64748b">${t.count}</span></div>`).join('');
+    } else {
+      document.getElementById('top-types').innerHTML = '<span style="color:#94a3b8;font-size:13px">لا توجد بيانات بعد</span>';
+    }
+  } catch(e) { /* stats endpoint may not exist */ }
+}
+
+// WhatsApp
+async function loadWA() {
+  try {
+    const r = await fetch(EVO + '/instance/connectionState/' + INST, {headers:{'apikey': EKEY}});
+    const d = await r.json();
+    const connected = d.instance?.state === 'open';
+    document.getElementById('wa-state').innerHTML = `
+      <div style="font-size:13px;line-height:2">
+        <div><strong>الحالة:</strong> <span style="color:${connected?'#16a34a':'#dc2626'}">${connected?'✅ متصل':'❌ غير متصل'}</span></div>
+        ${d.instance?.owner ? '<div><strong>الرقم:</strong> <span style="font-family:monospace">'+d.instance.owner+'</span></div>' : ''}
+        <div><strong>Instance:</strong> <span style="font-family:monospace">${INST}</span></div>
+      </div>`;
+  } catch(e) {
+    document.getElementById('wa-state').innerHTML = '<span style="color:#ef4444;font-size:13px">تعذّر الاتصال بـ Evolution API<br>تأكد من تشغيل الخدمة وصحة الرابط في الإعدادات</span>';
+  }
+}
+
+async function connectWA() {
+  document.getElementById('qr-box').innerHTML = '<span style="color:#6366f1;font-size:13px">⏳ جاري الحصول على QR...</span>';
+  try {
+    const r = await fetch(EVO + '/instance/connect/' + INST, {headers:{'apikey': EKEY}});
+    const d = await r.json();
+    if (d.base64) {
+      const src = d.base64.startsWith('data:') ? d.base64 : 'data:image/png;base64,' + d.base64;
+      document.getElementById('qr-box').innerHTML = `<img src="${src}" style="width:180px;height:180px;border-radius:8px">`;
+    } else if (d.qrcode) {
+      // Render raw QR string using a QR library
+      document.getElementById('qr-box').innerHTML = `<canvas id="qr-canvas"></canvas>`;
+      loadQRLib(d.qrcode);
+    } else {
+      document.getElementById('qr-box').innerHTML = '<span style="color:#16a34a;font-size:13px;font-weight:600">✅ واتساب متصل بالفعل</span>';
+      loadWA();
+    }
+  } catch(e) {
+    document.getElementById('qr-box').innerHTML = `<span style="color:#ef4444;font-size:12px">خطأ: ${e.message}<br>تأكد أن Evolution API يعمل على: ${EVO}</span>`;
+  }
+}
+
+function loadQRLib(text) {
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
+  s.onload = () => {
+    QRCode.toCanvas(document.getElementById('qr-canvas'), text, {width:180}, err => {
+      if (err) document.getElementById('qr-box').innerHTML = '<span style="color:#ef4444;font-size:12px">تعذّر تحميل QR</span>';
+    });
+  };
+  document.head.appendChild(s);
+}
+
+async function disconnectWA() {
+  if (!confirm('قطع اتصال واتساب؟')) return;
+  try {
+    await fetch(EVO + '/instance/logout/' + INST, {method:'DELETE', headers:{'apikey': EKEY}});
+    toast('تم قطع الاتصال');
+    loadWA();
+    document.getElementById('qr-box').innerHTML = '<span style="color:#94a3b8;font-size:13px">اضغط "اتصال" للحصول على QR</span>';
+  } catch(e) { toast('خطأ: ' + e.message, 'err'); }
+}
+
+async function createInst() {
+  const name = document.getElementById('inst-name').value.trim() || 'wean_bot';
+  try {
+    const r = await fetch(EVO + '/instance/create', {
+      method:'POST', headers:{'apikey': EKEY, 'Content-Type':'application/json'},
+      body: JSON.stringify({instanceName: name, qrcode: true, integration: 'WHATSAPP-BAILEYS'})
+    });
+    const d = await r.json();
+    INST = name;
+    document.getElementById('inst-result').innerHTML = `<span style="color:#16a34a">✅ تم إنشاء instance: <strong>${name}</strong></span>`;
+    toast('تم إنشاء Instance بنجاح');
+  } catch(e) { document.getElementById('inst-result').innerHTML = `<span style="color:#ef4444">خطأ: ${e.message}</span>`; }
+}
+
+// Contacts
+async function loadContacts() {
+  try {
+    const d = await req(API + '/admin/contacts?limit=200');
+    allC = d.contacts || [];
+    renderC(allC);
+  } catch(e) {
+    document.getElementById('c-tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:#ef4444">${e.message}</td></tr>`;
+  }
+}
+function renderC(data) {
+  if (!data.length) { document.getElementById('c-tbody').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:#94a3b8">لا توجد جهات اتصال</td></tr>'; return; }
+  document.getElementById('c-tbody').innerHTML = data.map(c => {
+    const phone = c.phone_number || c.phone || '—';
+    const date = c.last_interaction ? new Date(c.last_interaction).toLocaleDateString('ar-SA') : '—';
+    return `<tr>
+      <td style="font-family:monospace">+${phone}</td>
+      <td style="text-align:center">${c.total_searches||0}</td>
+      <td>${date}</td>
+      <td><span class="badge ${c.opted_out?'badge-red':'badge-green'}">${c.opted_out?'متوقف':'نشط'}</span></td>
+      <td><button onclick="toggleOpt('${phone}',${!!c.opted_out})" class="btn btn-outline" style="padding:4px 10px;font-size:11px">${c.opted_out?'تفعيل':'إيقاف'}</button></td>
+    </tr>`;
+  }).join('');
+}
+function filterC() {
+  const q = document.getElementById('c-search').value;
+  const f = document.getElementById('c-filter').value;
+  renderC(allC.filter(c => {
+    const p = String(c.phone_number||c.phone||'');
+    if (q && !p.includes(q)) return false;
+    if (f === 'active' && c.opted_out) return false;
+    if (f === 'off' && !c.opted_out) return false;
+    return true;
+  }));
+}
+async function toggleOpt(phone, on) {
+  try {
+    await req(API + '/admin/contacts/' + phone + '/opt-out', {method:'POST', body: JSON.stringify({opted_out: !on})});
+    toast(on ? 'تم تفعيل الجهة' : 'تم إيقاف الجهة');
+    loadContacts();
+  } catch(e) { toast('خطأ: ' + e.message, 'err'); }
+}
+function exportCSV() {
+  if (!allC.length) { toast('لا توجد بيانات', 'err'); return; }
+  const rows = [['رقم الهاتف','عمليات البحث','آخر تفاعل','الحالة']];
+  allC.forEach(c => rows.push([c.phone_number||c.phone||'', c.total_searches||0, c.last_interaction||'', c.opted_out?'متوقف':'نشط']));
+  const blob = new Blob(['\uFEFF' + rows.map(r=>r.join(',')).join('\n')], {type:'text/csv'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'contacts.csv'; a.click();
+}
+
+// Broadcasts
+function previewMsg() {
+  let t = document.getElementById('bc-msg').value;
+  t = t.replace(/\*(.*?)\*/g, '<strong>$1</strong>').replace(/_(.*?)_/g, '<em>$1</em>');
+  document.getElementById('bc-preview').innerHTML = t || 'اكتب الرسالة للمعاينة';
+}
+async function loadBCHist() {
+  try {
+    const d = await req(API + '/admin/broadcasts');
+    const list = d.broadcasts || [];
+    if (!list.length) { document.getElementById('bc-hist').textContent = 'لا يوجد سجل بعد'; return; }
+    document.getElementById('bc-hist').innerHTML = list.slice(0,5).map(b => `
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:12px">
+        <span>${b.created_at ? new Date(b.created_at).toLocaleDateString('ar-SA') : '—'}</span>
+        <span>${b.sent_count||0} رسالة</span>
+        <span class="badge ${b.status==='completed'?'badge-green':'badge-yellow'}">${b.status||'pending'}</span>
+      </div>`).join('');
+  } catch(e) { document.getElementById('bc-hist').textContent = 'تعذّر تحميل السجل'; }
+}
+async function sendBC() {
+  const msg = document.getElementById('bc-msg').value.trim();
+  const target = document.getElementById('bc-target').value;
+  if (!msg) { toast('الرجاء كتابة الرسالة', 'err'); return; }
+  if (!confirm(`إرسال البث لـ "${target}"?`)) return;
+  try {
+    const r = await req(API + '/admin/broadcasts', {method:'POST', body: JSON.stringify({message: msg, target_filter: target})});
+    toast(`✅ البث مجدول — ${r.estimated_recipients||0} مستلم`);
+    document.getElementById('bc-msg').value = '';
+    loadBCHist();
+  } catch(e) { toast('خطأ: ' + e.message, 'err'); }
+}
+
+// Advertisers
+async function loadAdv() {
+  try {
+    const d = await req(API + '/admin/advertisers');
+    const list = d.advertisers || [];
+    if (!list.length) { document.getElementById('adv-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8">لا توجد طلبات</td></tr>'; return; }
+    document.getElementById('adv-tbody').innerHTML = list.map(a => `<tr>
+      <td>${a.name||'—'}</td><td style="font-family:monospace;font-size:12px">${a.phone||'—'}</td>
+      <td>${a.ad_type||'—'}</td>
+      <td style="font-size:12px">${a.created_at ? new Date(a.created_at).toLocaleDateString('ar-SA') : '—'}</td>
+      <td><span class="badge ${a.status==='active'?'badge-green':a.status==='pending'?'badge-yellow':'badge-red'}">${a.status||'pending'}</span></td>
+      <td style="display:flex;gap:4px">
+        ${a.status==='pending' ? `<button onclick="advAct('${a.$id||a.id}','approve')" class="btn btn-success" style="padding:3px 8px;font-size:11px">قبول</button><button onclick="advAct('${a.$id||a.id}','reject')" class="btn btn-danger" style="padding:3px 8px;font-size:11px">رفض</button>` : '<span style="color:#94a3b8;font-size:12px">—</span>'}
+      </td></tr>`).join('');
+  } catch(e) { document.getElementById('adv-tbody').innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:#ef4444">${e.message}</td></tr>`; }
+}
+async function advAct(id, action) {
+  try {
+    await req(API + '/admin/advertisers/' + id + '/' + action, {method:'POST'});
+    toast(action === 'approve' ? '✅ تم القبول' : 'تم الرفض');
+    loadAdv();
+  } catch(e) { toast('خطأ: ' + e.message, 'err'); }
+}
+
+// Settings
+function loadSettings() {
+  document.getElementById('cfg-api').value = API;
+  document.getElementById('cfg-evo').value = EVO;
+  document.getElementById('cfg-key').value = EKEY;
+  req(API + '/admin/settings').then(s => {
+    if (s.search_radius) document.getElementById('cfg-radius').value = s.search_radius;
+    if (s.max_results) document.getElementById('cfg-results').value = s.max_results;
+    if (s.welcome_message) document.getElementById('cfg-welcome').value = s.welcome_message;
+    if (s.broadcast_cooldown_days) document.getElementById('cfg-cool').value = s.broadcast_cooldown_days;
+    if (s.broadcast_start_hour !== undefined) document.getElementById('cfg-sh').value = s.broadcast_start_hour;
+    if (s.broadcast_end_hour !== undefined) document.getElementById('cfg-eh').value = s.broadcast_end_hour;
+  }).catch(()=>{});
+}
+function saveConn() {
+  API = document.getElementById('cfg-api').value.trim().replace(/\/$/,'');
+  EVO = document.getElementById('cfg-evo').value.trim().replace(/\/$/,'');
+  EKEY = document.getElementById('cfg-key').value.trim();
+  localStorage.setItem('w_api', API);
+  localStorage.setItem('w_evo', EVO);
+  localStorage.setItem('w_ekey', EKEY);
+  toast('✅ تم حفظ إعدادات الاتصال');
+  checkHealth();
+}
+async function saveBotCfg() {
+  try {
+    await req(API + '/admin/settings', {method:'POST', body: JSON.stringify({
+      search_radius: parseInt(document.getElementById('cfg-radius').value),
+      max_results: parseInt(document.getElementById('cfg-results').value),
+      welcome_message: document.getElementById('cfg-welcome').value
+    })});
+    toast('✅ تم حفظ إعدادات البوت');
+  } catch(e) { toast('خطأ: ' + e.message, 'err'); }
+}
+async function saveSpam() {
+  try {
+    await req(API + '/admin/settings', {method:'POST', body: JSON.stringify({
+      broadcast_cooldown_days: parseInt(document.getElementById('cfg-cool').value),
+      broadcast_start_hour: parseInt(document.getElementById('cfg-sh').value),
+      broadcast_end_hour: parseInt(document.getElementById('cfg-eh').value)
+    })});
+    toast('✅ تم حفظ إعدادات الحماية');
+  } catch(e) { toast('خطأ: ' + e.message, 'err'); }
+}
+async function testIntent() {
+  const text = document.getElementById('t-intent').value.trim();
+  if (!text) return;
+  const el = document.getElementById('t-intent-res');
+  try {
+    const r = await req(API + '/intent', {method:'POST', body: JSON.stringify({text})});
+    el.style.display = 'block';
+    el.style.color = '#1e293b';
+    el.innerHTML = `<strong>النوع:</strong> ${r.place_type||'غير محدد'} | <strong>الثقة:</strong> ${(r.confidence*100).toFixed(1)}%<br>${r.suggested_reply}`;
+  } catch(e) { el.style.display='block'; el.style.color='#ef4444'; el.textContent='خطأ: '+e.message; }
+}
+async function testSearch() {
+  const lat = parseFloat(document.getElementById('t-lat').value)||24.7136;
+  const lng = parseFloat(document.getElementById('t-lng').value)||46.6753;
+  const type = document.getElementById('t-type').value;
+  const el = document.getElementById('t-search-res');
+  el.style.display='block'; el.textContent='⏳ جاري البحث...';
+  try {
+    const r = await req(API + '/search', {method:'POST', body: JSON.stringify({lat, lng, place_type: type, radius:2000, max_results:3})});
+    el.style.color='#1e293b';
+    el.innerHTML = `<strong>وجد ${r.total_found} مكان</strong><br>` + (r.places||[]).map(p=>`• ${p.name} — ${p.distance_m}م`).join('<br>');
+  } catch(e) { el.style.color='#ef4444'; el.textContent='خطأ: '+e.message; }
+}
+
+// Init
+checkHealth();
+loadDash();
+setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>
